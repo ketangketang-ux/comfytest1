@@ -1,8 +1,8 @@
 # =======================================================
-#  ComfyUI on Modal – V10.2 ULTRA FINAL
-#  HF Token + Civitai Token
-#  SUPIR removed, Video Input fixed (PyAV)
+#  ComfyUI on Modal – V10.2 ULTRA FINAL (GitHub Version)
+#  SUPIR removed, PyAV fixed, torchsde fixed, HF & Civitai
 # =======================================================
+
 import os
 import shutil
 import subprocess
@@ -14,7 +14,7 @@ import modal
 from huggingface_hub import hf_hub_download, login as hf_login
 
 # =======================================================
-#  CONFIG
+#  BASIC CONFIG
 # =======================================================
 app = modal.App("comfyui-2025")
 
@@ -26,12 +26,11 @@ GPU = "L4"
 vol = modal.Volume.from_name("comfyui-vol", create_if_missing=True)
 
 # =======================================================
-#  BASE IMAGE (video + torchdeps)
+#  BASE IMAGE (PyTorch + PyAV + FFmpeg libs)
 # =======================================================
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install(
-        # core
         "git",
         "wget",
         "unzip",
@@ -39,7 +38,7 @@ image = (
         "libgl1-mesa-glx",
         "libglib2.0-0",
 
-        # PyAV required (video input fix)
+        # PyAV deps
         "libavformat-dev",
         "libavcodec-dev",
         "libavutil-dev",
@@ -52,7 +51,7 @@ image = (
         "pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121"
     )
     .pip_install(
-        # HF + base
+        # core
         "huggingface_hub[hf_transfer]",
         "requests",
         "tqdm",
@@ -74,9 +73,9 @@ image = (
         "packaging",
         "lmdb",
         "pytorch_lightning",
-        "torchsde",  # KJNodes / Impact-Pack need this
+        "torchsde",          # REQUIRED for KJNodes + flow models
 
-        # onnx + face
+        # face + onnx
         "insightface",
         "onnxruntime-gpu",
     )
@@ -87,20 +86,21 @@ image = (
 #  HELPERS
 # =======================================================
 def run(cmd, cwd=None):
+    """Run shell command with error handling."""
     subprocess.run(cmd, shell=True, check=True, cwd=cwd)
 
 def hf_download(subdir, filename, repo):
-    """Download model from HuggingFace using token."""
+    """Download model from HF (authenticated)."""
     token = os.getenv("HF_TOKEN")
     if not token:
-        raise RuntimeError("HF_TOKEN missing in secret!")
+        raise RuntimeError("HF_TOKEN missing!")
 
     hf_login(token)
 
     dest = BASE / "models" / subdir
     dest.mkdir(parents=True, exist_ok=True)
 
-    print(f"⬇️ HF: {repo}/{filename}")
+    print(f"⬇️ Download HF → {repo}/{filename}")
 
     tmp = hf_hub_download(
         repo_id=repo,
@@ -109,23 +109,19 @@ def hf_download(subdir, filename, repo):
         local_dir="/tmp",
         local_dir_use_symlinks=False,
     )
-
     shutil.move(tmp, dest / filename)
 
 def civitai_download(model_id, filename, subdir="loras"):
-    """Download LoRA / model from Civitai."""
+    """Download model from Civitai."""
     token = os.getenv("CIVITAI_TOKEN")
     if not token:
         raise RuntimeError("CIVITAI_TOKEN missing!")
 
     url = f"https://civitai.com/api/v1/model-versions/{model_id}/download"
-    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(url, headers={"Authorization": f"Bearer {token}"})
 
-    print(f"⬇️ Civitai: {model_id} → {filename}")
-
-    r = requests.get(url, headers=headers)
     if r.status_code != 200:
-        raise RuntimeError(f"Civitai download failed: {r.text}")
+        raise RuntimeError(f"Civitai error: {r.text}")
 
     dest = BASE / "models" / subdir
     dest.mkdir(parents=True, exist_ok=True)
@@ -134,7 +130,7 @@ def civitai_download(model_id, filename, subdir="loras"):
         f.write(r.content)
 
 # =======================================================
-#  SETUP
+#  SETUP FUNCTION
 # =======================================================
 @app.function(
     gpu=GPU,
@@ -147,11 +143,13 @@ def civitai_download(model_id, filename, subdir="loras"):
     ],
 )
 def setup():
-    print("\n📦 START SETUP\n")
 
+    print("\n===== SETUP START =====\n")
+
+    # HF login
     hf_login(os.getenv("HF_TOKEN"))
 
-    # Clone / update ComfyUI
+    # Clone/update ComfyUI
     if not (BASE / "main.py").exists():
         print("📥 Cloning ComfyUI...")
         BASE.parent.mkdir(parents=True, exist_ok=True)
@@ -160,8 +158,9 @@ def setup():
         print("🔄 Updating ComfyUI...")
         run("git pull --ff-only", cwd=BASE)
 
-    # Custom nodes (SUPIR removed)
+    # Custom nodes (NO SUPIR!)
     print("\n📦 Installing custom nodes...\n")
+
     nodes = {
         "ComfyUI-Manager": "https://github.com/ltdrdata/ComfyUI-Manager.git",
         "rgthree": "https://github.com/rgthree/rgthree-comfy.git",
@@ -177,10 +176,10 @@ def setup():
         dst = BASE / "custom_nodes" / name
         if dst.exists():
             shutil.rmtree(dst)
-        print(f"🔧 Installing node: {name}")
+        print(f"🔧 Node: {name}")
         run(f"git clone --depth 1 {repo} {dst}")
 
-    # InsightFace: buffalo_l
+    # Buffalo_L for ReActor
     print("\n📦 Installing buffalo_l...")
     face_dir = Path(DATA_ROOT, ".insightface", "models")
     face_dir.mkdir(parents=True, exist_ok=True)
@@ -195,23 +194,25 @@ def setup():
             z.extractall(face_dir)
         zipf.unlink()
 
-    # FLUX MODELS (HF gated)
+    # Download FLUX models
     print("\n📦 Downloading FLUX models...\n")
-    models = [
+
+    flux_files = [
         ("checkpoints", "flux1-dev-fp8.safetensors", "camenduru/FLUX.1-dev"),
         ("vae/FLUX", "ae.safetensors", "black-forest-labs/FLUX.1-dev"),
         ("clip/FLUX", "clip_l.safetensors", "black-forest-labs/FLUX.1-dev"),
         ("clip/FLUX", "text_encoder.t5xxl.fp8_e4m3fn.safetensors", "black-forest-labs/FLUX.1-dev"),
     ]
 
-    for sub, fn, repo in models:
-        hf_download(sub, fn, repo)
+    for sub, file, repo in flux_files:
+        hf_download(sub, file, repo)
 
     vol.commit()
-    print("\n✅ SETUP COMPLETED\n")
+
+    print("\n===== SETUP COMPLETED =====\n")
 
 # =======================================================
-#  LAUNCH
+#  LAUNCH FUNCTION
 # =======================================================
 @app.function(
     gpu=GPU,
@@ -224,7 +225,9 @@ def setup():
     ],
 )
 def launch():
+
     print("\n🔥 Starting ComfyUI...\n")
+
     os.chdir(BASE)
 
     proc = subprocess.Popen(
@@ -232,11 +235,11 @@ def launch():
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        bufsize=1
+        bufsize=1,
     )
 
     for line in proc.stdout:
         print(line, end="")
 
     proc.wait()
-    print(f"\n⚠️ ComfyUI exited with code {proc.returncode}")
+    print(f"\n⚠️ ComfyUI exited with code: {proc.returncode}")
