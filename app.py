@@ -38,14 +38,24 @@ image = (
         "pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121"
     )
     .pip_install(
-        "huggingface_hub[hf_transfer]",
-        "insightface",
-        "onnxruntime-gpu",
-        "tqdm",
-        "requests",
-        "einops",
-        "opencv-python",
-        "pillow",
+    "huggingface_hub[hf_transfer]",
+    "insightface",
+    "onnxruntime-gpu",
+    "tqdm",
+    "requests",
+    "einops",
+    "opencv-python",
+    "pillow",
+    "psutil",
+    "numpy",
+    "safetensors",
+    "scipy",
+    "transformers",
+    "tokenizers",
+    "aiohttp",
+    "packaging",
+    "lmdb",
+    "pytorch_lightning",
 )
 
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
