@@ -1,7 +1,7 @@
 # ==========================
-# comfyui_appc.py  (FULL, Modal ≥ 0.63)
+# comfyui_app.py  (FINAL 2025, FIXED)
 # ==========================
-import os, shutil, subprocess, modal
+import os, shutil, subprocess, modal, zipfile
 from pathlib import Path
 from huggingface_hub import hf_hub_download
 
@@ -12,7 +12,14 @@ GPU_TYPE  = os.getenv("MODAL_GPU_TYPE", "L4")
 # ---------- IMAGE ----------
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .apt_install("git", "wget", "unzip", "ffmpeg", "libgl1-mesa-glx", "libglib2.0-0")
+    .apt_install(
+        "git",
+        "wget",
+        "unzip",
+        "ffmpeg",
+        "libgl1-mesa-glx",
+        "libglib2.0-0",
+    )
     .run_commands(
         "python -m pip install --upgrade pip",
         "pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121"
@@ -46,7 +53,10 @@ def hf_dl(subdir: str, filename: str, repo_id: str, subfolder: str | None = None
     )
     shutil.move(out, target / filename)
 
-# ---------- MAIN ----------
+
+# ==================================================
+#                   MAIN FUNCTION
+# ==================================================
 @app.function(
     gpu=GPU_TYPE,
     timeout=3600,
@@ -56,21 +66,24 @@ def hf_dl(subdir: str, filename: str, repo_id: str, subfolder: str | None = None
 )
 @modal.web_server(8188)
 def ui():
-    # 1. clone / update ComfyUI core
+    # 1. Clone/update ComfyUI
     if not (DATA_BASE / "main.py").exists():
         DATA_BASE.parent.mkdir(parents=True, exist_ok=True)
         run(f"git clone https://github.com/comfyanonymous/ComfyUI {DATA_BASE}")
+
     os.chdir(DATA_BASE)
     run("git config pull.ff only && git pull --ff-only")
 
     # 2. Manager
     mgr = DATA_BASE / "custom_nodes" / "ComfyUI-Manager"
     if mgr.exists():
-        os.chdir(mgr); run("git pull --ff-only"); os.chdir(DATA_BASE)
+        os.chdir(mgr)
+        run("git pull --ff-only")
+        os.chdir(DATA_BASE)
     else:
         run("git clone https://github.com/ltdrdata/ComfyUI-Manager.git custom_nodes/ComfyUI-Manager")
 
-    # 3. Node hits 2025 – inside ui() → no UnboundLocalError
+    # 3. Additional custom nodes (clean reinstall)
     repos = [
         ("rgthree-comfy",          "https://github.com/rgthree/rgthree-comfy.git"),
         ("comfyui-impact-pack",    "https://github.com/ltdrdata/ComfyUI-Impact-Pack.git"),
@@ -78,10 +91,11 @@ def ui():
         ("ComfyUI-SUPIR",          "https://github.com/cubiq/ComfyUI-SUPIR.git"),
         ("ComfyUI-InsightFace",    "https://github.com/cubiq/ComfyUI-InsightFace.git"),
         ("ComfyUI_essentials",     "https://github.com/cubiq/ComfyUI_essentials.git"),
-        ("comfyui-ipadapter-plus", "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git"),
+        ("ComfyUI_IPAdapter_plus", "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git"),
         ("ComfyUI-KJNodes",        "https://github.com/kijai/ComfyUI-KJNodes.git"),
         ("ComfyUI_Mira",           "https://github.com/Mira-Geoscience/ComfyUI_Mira.git"),
     ]
+
     for folder, url in repos:
         dst = DATA_BASE / "custom_nodes" / folder
         if dst.exists():
@@ -89,42 +103,39 @@ def ui():
         try:
             run(f"git clone --depth 1 {url} {dst}")
         except subprocess.CalledProcessError:
-            print(f"⚠️  Skip {folder} – clone failed")
-            continue
+            print(f"⚠️ Skip {folder} – clone failed")
 
-               # 4. InsightFace model – GitHub mirror + native extract
-    import zipfile, io
-    insight_vol = Path(DATA_ROOT, ".insightface", "models")
-    insight_vol.mkdir(parents=True, exist_ok=True)
-    target_dir = insight_vol / "buffalo_l"
+    # 4. InsightFace model
+    insight_dir = Path(DATA_ROOT, ".insightface", "models")
+    insight_dir.mkdir(parents=True, exist_ok=True)
+    buffalo = insight_dir / "buffalo_l"
 
-    if not target_dir.exists():
-        print("⬇️  Download InsightFace buffalo_l (GitHub mirror)...")
-        zip_url = "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
-        zip_path = insight_vol / "buffalo_l.zip"
+    if not buffalo.exists():
+        print("⬇️ Downloading InsightFace buffalo_l")
+        zip_path = insight_dir / "buffalo_l.zip"
+        run(f"wget -q -O {zip_path} https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip")
 
-        # download
-        run(f"wget -q --show-progress -O {zip_path} {zip_url}")
-        # ekstrak pakai Python (no unzip binary)
         with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(insight_vol)
+            zf.extractall(insight_dir)
+
         zip_path.unlink(missing_ok=True)
         print("✅ buffalo_l extracted")
-    # 5. Model dasar (FLUX + VAE + CLIP)
+
+    # 5. FLUX models
     mods = [
         ("checkpoints", "flux1-dev-fp8.safetensors", "camenduru/FLUX.1-dev", None),
-        ("vae/FLUX", "ae.safetensors", "comfyanonymous/flux_vae", None),
-        ("clip/FLUX", "t5xxl_fp8_e4m3fn.safetensors", "comfyanonymous/flux_text_encoders", None),
-        ("clip/FLUX", "clip_l.safetensors", "comfyanonymous/flux_text_encoders", None),
+        ("vae/FLUX",    "ae.safetensors",            "comfyanonymous/flux_vae", None),
+        ("clip/FLUX",   "t5xxl_fp8_e4m3fn.safetensors", "comfyanonymous/flux_text_encoders", None),
+        ("clip/FLUX",   "clip_l.safetensors",           "comfyanonymous/flux_text_encoders", None),
     ]
+
     for sub, fn, repo, sf in mods:
         if not (DATA_BASE / "models" / sub / fn).exists():
             hf_dl(sub, fn, repo, sf)
 
-    # 6. persist & run
-vol.commit()
-print("🚀 ComfyUI ready – Modal will start main.py")
-# jangan panggil main.py lagi, serahkan ke @modal.web_server
-import time
-while True:
-    time.sleep(3600)
+    # ============================
+    # 6. THE FIX: commit INSIDE CONTAINER
+    # ============================
+    vol.commit()
+
+    print("🚀 ComfyUI ready → Modal will serve main.py automatically")
