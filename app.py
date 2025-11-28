@@ -133,9 +133,19 @@ def ui():
         if not (DATA_BASE / "models" / sub / fn).exists():
             hf_dl(sub, fn, repo, sf)
 
-    # ============================
-    # 6. THE FIX: commit INSIDE CONTAINER
-    # ============================
+       
+    # ======================================
+    # 6. START COMFYUI SERVER (THE FIX)
+    # ======================================
+    print("🔥 Starting ComfyUI server...")
+    subprocess.Popen(
+        ["python3", "main.py", "--listen", "0.0.0.0", "--port", "8188"],
+        cwd=DATA_BASE
+    )
+
+    # ======================================
+    # 7. Commit volume INSIDE CONTAINER
+    # ======================================
     vol.commit()
 
-    print("🚀 ComfyUI ready → Modal will serve main.py automatically")
+    print("🚀 ComfyUI ready → running on port 8188")
