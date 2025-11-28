@@ -1,6 +1,7 @@
 # =======================================================
-#  ComfyUI on Modal – V10.2 ULTRA FINAL (GitHub Version)
-#  SUPIR removed, PyAV fixed, torchsde fixed, HF & Civitai
+#  ComfyUI + FLUX on Modal – V11 CLEAN (2025)
+#  WITHOUT custom nodes, BUT with full Python deps
+#  → So ComfyUI Manager can install nodes without errors
 # =======================================================
 
 import os
@@ -14,7 +15,7 @@ import modal
 from huggingface_hub import hf_hub_download, login as hf_login
 
 # =======================================================
-#  BASIC CONFIG
+# CONFIG
 # =======================================================
 app = modal.App("comfyui-2025")
 
@@ -26,7 +27,7 @@ GPU = "L4"
 vol = modal.Volume.from_name("comfyui-vol", create_if_missing=True)
 
 # =======================================================
-#  BASE IMAGE (PyTorch + PyAV + FFmpeg libs)
+# BASE IMAGE – with ALL deps required by ComfyUI & nodes
 # =======================================================
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -61,36 +62,51 @@ image = (
         "psutil",
         "safetensors",
 
-        # video support
-        "av",
+        # comfy frontend deps (2025)
+        "alembic",
+        "pydantic-settings",
+        "comfyui-embedded-docs",
+        "comfyui-workflow-templates",
 
-        # image libs
+        # image
         "opencv-python",
         "scipy",
 
-        # node deps
-        "aiohttp",
+        # video
+        "av",
+
+        # node deps global
         "packaging",
+        "aiohttp",
         "lmdb",
         "pytorch_lightning",
-        "torchsde",          # REQUIRED for KJNodes + flow models
+        "torchsde",
+        "python-magic",
+        "svglib",
+        "pycocotools",
 
-        # face + onnx
+        # face
         "insightface",
         "onnxruntime-gpu",
+
+        # upscale / extras
+        "spandrel",
+        "kornia",
+        "piexif",
+
+        # React/Seg
+        "segment-anything",
     )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
 # =======================================================
-#  HELPERS
+# HELPERS
 # =======================================================
 def run(cmd, cwd=None):
-    """Run shell command with error handling."""
     subprocess.run(cmd, shell=True, check=True, cwd=cwd)
 
 def hf_download(subdir, filename, repo):
-    """Download model from HF (authenticated)."""
     token = os.getenv("HF_TOKEN")
     if not token:
         raise RuntimeError("HF_TOKEN missing!")
@@ -100,8 +116,7 @@ def hf_download(subdir, filename, repo):
     dest = BASE / "models" / subdir
     dest.mkdir(parents=True, exist_ok=True)
 
-    print(f"⬇️ Download HF → {repo}/{filename}")
-
+    print(f"⬇️ HF: {repo}/{filename}")
     tmp = hf_hub_download(
         repo_id=repo,
         filename=filename,
@@ -112,25 +127,22 @@ def hf_download(subdir, filename, repo):
     shutil.move(tmp, dest / filename)
 
 def civitai_download(model_id, filename, subdir="loras"):
-    """Download model from Civitai."""
     token = os.getenv("CIVITAI_TOKEN")
     if not token:
         raise RuntimeError("CIVITAI_TOKEN missing!")
 
     url = f"https://civitai.com/api/v1/model-versions/{model_id}/download"
     r = requests.get(url, headers={"Authorization": f"Bearer {token}"})
-
     if r.status_code != 200:
-        raise RuntimeError(f"Civitai error: {r.text}")
+        raise RuntimeError(r.text)
 
     dest = BASE / "models" / subdir
     dest.mkdir(parents=True, exist_ok=True)
-
     with open(dest / filename, "wb") as f:
         f.write(r.content)
 
 # =======================================================
-#  SETUP FUNCTION
+# SETUP – installs ComfyUI + dependencies + Flux models
 # =======================================================
 @app.function(
     gpu=GPU,
@@ -144,9 +156,9 @@ def civitai_download(model_id, filename, subdir="loras"):
 )
 def setup():
 
-    print("\n===== SETUP START =====\n")
+    print("\n===== SETUP =====\n")
 
-    # HF login
+    # HF auth
     hf_login(os.getenv("HF_TOKEN"))
 
     # Clone/update ComfyUI
@@ -158,32 +170,14 @@ def setup():
         print("🔄 Updating ComfyUI...")
         run("git pull --ff-only", cwd=BASE)
 
-    # Custom nodes (NO SUPIR!)
-    print("\n📦 Installing custom nodes...\n")
+    # Install requirements of ComfyUI (2025)
+    print("\n📦 Installing ComfyUI requirements.txt ...\n")
+    run("pip install -r requirements.txt", cwd=BASE)
 
-    nodes = {
-        "ComfyUI-Manager": "https://github.com/ltdrdata/ComfyUI-Manager.git",
-        "rgthree": "https://github.com/rgthree/rgthree-comfy.git",
-        "Impact-Pack": "https://github.com/ltdrdata/ComfyUI-Impact-Pack.git",
-        "ReActor": "https://github.com/Gourieff/ComfyUI-ReActor.git",
-        "InsightFace": "https://github.com/cubiq/ComfyUI-InsightFace.git",
-        "Essentials": "https://github.com/cubiq/ComfyUI_essentials.git",
-        "IPAdapter+": "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git",
-        "KJNodes": "https://github.com/kijai/ComfyUI-KJNodes.git",
-    }
-
-    for name, repo in nodes.items():
-        dst = BASE / "custom_nodes" / name
-        if dst.exists():
-            shutil.rmtree(dst)
-        print(f"🔧 Node: {name}")
-        run(f"git clone --depth 1 {repo} {dst}")
-
-    # Buffalo_L for ReActor
+    # Install buffalo_l for ReActor/face nodes (optional but useful)
     print("\n📦 Installing buffalo_l...")
     face_dir = Path(DATA_ROOT, ".insightface", "models")
     face_dir.mkdir(parents=True, exist_ok=True)
-
     if not (face_dir / "buffalo_l").exists():
         zipf = face_dir / "buffalo_l.zip"
         run(
@@ -194,25 +188,23 @@ def setup():
             z.extractall(face_dir)
         zipf.unlink()
 
-    # Download FLUX models
+    # Download FLUX base models
     print("\n📦 Downloading FLUX models...\n")
-
-    flux_files = [
+    flux = [
         ("checkpoints", "flux1-dev-fp8.safetensors", "camenduru/FLUX.1-dev"),
         ("vae/FLUX", "ae.safetensors", "black-forest-labs/FLUX.1-dev"),
         ("clip/FLUX", "clip_l.safetensors", "black-forest-labs/FLUX.1-dev"),
         ("clip/FLUX", "text_encoder.t5xxl.fp8_e4m3fn.safetensors", "black-forest-labs/FLUX.1-dev"),
     ]
-
-    for sub, file, repo in flux_files:
+    for sub, file, repo in flux:
         hf_download(sub, file, repo)
 
     vol.commit()
 
-    print("\n===== SETUP COMPLETED =====\n")
+    print("\n===== SETUP DONE =====\n")
 
 # =======================================================
-#  LAUNCH FUNCTION
+# LAUNCH – ComfyUI server
 # =======================================================
 @app.function(
     gpu=GPU,
@@ -242,4 +234,4 @@ def launch():
         print(line, end="")
 
     proc.wait()
-    print(f"\n⚠️ ComfyUI exited with code: {proc.returncode}")
+    print(f"\n⚠️ ComfyUI exited: {proc.returncode}")
