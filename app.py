@@ -1,6 +1,6 @@
 # =======================================================
-#  ComfyUI on Modal – V9 FINAL
-#  HF TOKEN + CIVITAI TOKEN (SECRET FIXED)
+#  ComfyUI on Modal – V10 FINAL (Tanpa SUPIR)
+#  HF Token + Civitai Token (secret fixed)
 #  Modal CLI 1.2.1 Compatible
 # =======================================================
 import os
@@ -26,7 +26,7 @@ GPU = "L4"
 vol = modal.Volume.from_name("comfyui-vol", create_if_missing=True)
 
 # =======================================================
-#  BASE IMAGE
+#  IMAGE BASE
 # =======================================================
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -43,6 +43,7 @@ image = (
         "pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121",
     )
     .pip_install(
+        # core
         "huggingface_hub[hf_transfer]",
         "requests",
         "tqdm",
@@ -52,17 +53,17 @@ image = (
         "psutil",
         "safetensors",
 
-        # Image libs
+        # image libs
         "opencv-python",
         "scipy",
 
-        # Node requirements
+        # node deps
         "aiohttp",
         "packaging",
         "lmdb",
         "pytorch_lightning",
 
-        # SUPIR / InsightFace
+        # insightface / onnx
         "insightface",
         "onnxruntime-gpu",
     )
@@ -76,17 +77,17 @@ def run(cmd, cwd=None):
     subprocess.run(cmd, shell=True, check=True, cwd=cwd)
 
 def hf_download(subdir, filename, repo):
-    """Download HuggingFace models using Modal Secret."""
+    """Download HF models using HF_TOKEN from Modal Secret."""
     token = os.getenv("HF_TOKEN")
     if not token:
-        raise RuntimeError("HF_TOKEN not found in secret!")
+        raise RuntimeError("HF_TOKEN missing!")
 
     hf_login(token)
 
     dest = BASE / "models" / subdir
     dest.mkdir(parents=True, exist_ok=True)
 
-    print(f"⬇️ HF: {repo}/{filename}")
+    print(f"⬇️ Download HF: {repo}/{filename}")
 
     tmp = hf_hub_download(
         repo_id=repo,
@@ -99,10 +100,10 @@ def hf_download(subdir, filename, repo):
     shutil.move(tmp, dest / filename)
 
 def civitai_download(model_id, filename, subdir="loras"):
-    """Download model/LORA from Civitai using secret token."""
+    """Download LoRA/model from Civitai."""
     token = os.getenv("CIVITAI_TOKEN")
     if not token:
-        raise RuntimeError("CIVITAI_TOKEN not found!")
+        raise RuntimeError("CIVITAI_TOKEN missing!")
 
     url = f"https://civitai.com/api/v1/model-versions/{model_id}/download"
     headers = {"Authorization": f"Bearer {token}"}
@@ -111,7 +112,7 @@ def civitai_download(model_id, filename, subdir="loras"):
 
     r = requests.get(url, headers=headers)
     if r.status_code != 200:
-        raise RuntimeError(f"Civitai download failed: {r.text}")
+        raise RuntimeError(f"Civitai error: {r.text}")
 
     dest = BASE / "models" / subdir
     dest.mkdir(parents=True, exist_ok=True)
@@ -133,28 +134,26 @@ def civitai_download(model_id, filename, subdir="loras"):
     ],
 )
 def setup():
-    print("\n📦 START SETUP...\n")
+    print("\n📦 START SETUP\n")
 
-    # Login HF
     hf_login(os.getenv("HF_TOKEN"))
 
     # Clone ComfyUI
     if not (BASE / "main.py").exists():
-        print("📥 Clone ComfyUI...")
+        print("📥 Cloning ComfyUI...")
         BASE.parent.mkdir(parents=True, exist_ok=True)
         run(f"git clone https://github.com/comfyanonymous/ComfyUI {BASE}")
     else:
         print("🔄 Updating ComfyUI...")
         run("git pull --ff-only", cwd=BASE)
 
-    # Custom nodes
-    print("\n📦 Installing nodes...\n")
+    # Custom nodes (SUPIR REMOVED)
+    print("\n📦 Installing custom nodes...\n")
     nodes = {
         "ComfyUI-Manager": "https://github.com/ltdrdata/ComfyUI-Manager.git",
         "rgthree-comfy": "https://github.com/rgthree/rgthree-comfy.git",
         "Impact-Pack": "https://github.com/ltdrdata/ComfyUI-Impact-Pack.git",
         "ReActor": "https://github.com/Gourieff/ComfyUI-ReActor.git",
-        "SUPIR": "https://github.com/cubiq/ComfyUI-SUPIR.git",
         "InsightFace": "https://github.com/cubiq/ComfyUI-InsightFace.git",
         "Essentials": "https://github.com/cubiq/ComfyUI_essentials.git",
         "IPAdapter+": "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git",
@@ -165,10 +164,10 @@ def setup():
         dst = BASE / "custom_nodes" / name
         if dst.exists():
             shutil.rmtree(dst)
-        print(f"🔧 Install: {name}")
+        print(f"🔧 Installing node: {name}")
         run(f"git clone --depth 1 {repo} {dst}")
 
-    # InsightFace buffalo_l
+    # InsightFace: buffalo_l
     print("\n📦 Installing buffalo_l face model...")
     face_dir = Path(DATA_ROOT, ".insightface", "models")
     face_dir.mkdir(parents=True, exist_ok=True)
@@ -180,9 +179,7 @@ def setup():
             z.extractall(face_dir)
         zipf.unlink()
 
-    # =======================================================
-    #  DOWNLOAD FLUX MODELS
-    # =======================================================
+    # FLUX MODELS
     print("\n📦 Downloading FLUX models...\n")
 
     models = [
@@ -196,7 +193,7 @@ def setup():
         hf_download(sub, fn, repo)
 
     vol.commit()
-    print("\n✅ SETUP DONE\n")
+    print("\n✅ SETUP COMPLETED\n")
 
 # =======================================================
 #  LAUNCH
