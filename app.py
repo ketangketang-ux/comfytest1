@@ -50,12 +50,12 @@ image = (
     "numpy",
     "safetensors",
     "scipy",
-    "transformers",
     "aiohttp",
     "packaging",
     "lmdb",
     "pytorch_lightning",
 )
+
 
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
