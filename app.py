@@ -47,6 +47,7 @@ image = (
         "huggingface_hub[hf_transfer]",
         "requests",
         "tqdm",
+        "torchsde",
         "einops",
         "numpy",
         "pillow",
