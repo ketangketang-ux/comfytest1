@@ -1,5 +1,5 @@
 # =======================================================
-#  ComfyUI on Modal – FINAL VERSION (Modal V2 Compatible)
+#  ComfyUI on Modal – FINAL VERSION (Modal 1.2.1 Compatible)
 # =======================================================
 import os
 import shutil
@@ -70,6 +70,8 @@ def hf_get(subdir, filename, repo):
 # -------------------------------------------------------
 @app.function(gpu=GPU, volumes={DATA_ROOT: vol}, timeout=900, image=image)
 def setup():
+    print("📦 SETUP START")
+
     # Clone ComfyUI if not installed
     if not (BASE / "main.py").exists():
         BASE.parent.mkdir(parents=True, exist_ok=True)
@@ -100,9 +102,10 @@ def setup():
         dst = BASE / "custom_nodes" / name
         if dst.exists(): shutil.rmtree(dst)
         try:
+            print(f"🔧 Installing node: {name}")
             run(f"git clone --depth 1 {repo} {dst}")
         except:
-            print(f"[WARN] gagal clone node: {name}")
+            print(f"⚠️ Failed installing node: {name}")
 
     # InsightFace buffalo_l
     face_dir = Path(DATA_ROOT, ".insightface", "models")
@@ -125,17 +128,30 @@ def setup():
 
     for sub, fn, repo in models:
         if not (BASE / "models" / sub / fn).exists():
+            print(f"⬇️ Downloading model: {fn}")
             hf_get(sub, fn, repo)
 
     vol.commit()
-    print("✅ SETUP COMPLETED. READY TO LAUNCH.")
-
+    print("✅ SETUP COMPLETED")
 
 # -------------------------------------------------------
-# LAUNCH Function (Run ComfyUI server)
+# LAUNCH Function (With Live Log Stream)
 # -------------------------------------------------------
 @app.function(gpu=GPU, volumes={DATA_ROOT: vol}, timeout=86400, image=image)
 def launch():
+    print("🔥 Starting ComfyUI...\n=====================\n")
     os.chdir(BASE)
-    print("🔥 Starting ComfyUI on port 8188 ...")
-    run("python3 main.py --listen 0.0.0.0 --port 8188")
+
+    proc = subprocess.Popen(
+        ["python3", "main.py", "--listen", "0.0.0.0", "--port", "8188"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    # STREAM ALL LOGS TO COLAB
+    for line in proc.stdout:
+        print(line, end="")
+
+    proc.wait()
+    print(f"\n⚠️ ComfyUI exited with code: {proc.returncode}")
