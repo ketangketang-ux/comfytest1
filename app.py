@@ -1,5 +1,6 @@
 # =======================================================
-#  ComfyUI on Modal – FINAL VERSION (Modal 1.2.1 Compatible)
+#  ComfyUI on Modal – V6 FINAL (2025) - Fully Stable
+#  Compatible with Modal CLI 1.2.1
 # =======================================================
 import os
 import shutil
@@ -21,7 +22,7 @@ GPU = "L4"
 vol = modal.Volume.from_name("comfyui-vol", create_if_missing=True)
 
 # -------------------------------------------------------
-# Image with ALL dependencies preinstalled
+# Image with all stable dependencies
 # -------------------------------------------------------
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -35,33 +36,40 @@ image = (
     )
     .run_commands(
         "python3 -m pip install --upgrade pip wheel setuptools",
-        "pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121"
+        "pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121",
     )
     .pip_install(
-    "huggingface_hub[hf_transfer]",
-    "insightface",
-    "onnxruntime-gpu",
-    "tqdm",
-    "requests",
-    "einops",
-    "opencv-python",
-    "pillow",
-    "psutil",
-    "numpy",
-    "safetensors",
-    "scipy",
-    "aiohttp",
-    "packaging",
-    "lmdb",
-    "pytorch_lightning",
-)
+        # CORE
+        "huggingface_hub[hf_transfer]",
+        "requests",
+        "tqdm",
+        "einops",
+        "numpy",
+        "pillow",
+        "psutil",
+        "safetensors",
 
+        # IMAGE + SCIENTIFIC
+        "opencv-python",
+        "scipy",
 
+        # REQUIRED BY MANAGER
+        "aiohttp",
+        "packaging",
+        "lmdb",
+
+        # REQUIRED FOR SUPIR / lightning nodes
+        "pytorch_lightning",
+
+        # INSIGHTFACE + ONNX
+        "insightface",
+        "onnxruntime-gpu",
+    )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
 # -------------------------------------------------------
-# Helpers
+# Helper Functions
 # -------------------------------------------------------
 def run(cmd, cwd=None):
     subprocess.run(cmd, shell=True, check=True, cwd=cwd)
@@ -76,51 +84,51 @@ def hf_get(subdir, filename, repo):
         local_dir="/tmp",
         local_dir_use_symlinks=False,
     )
+
     shutil.move(tmp, dest / filename)
 
 # -------------------------------------------------------
-# SETUP Function
+# SETUP
 # -------------------------------------------------------
-@app.function(gpu=GPU, volumes={DATA_ROOT: vol}, timeout=900, image=image)
+@app.function(gpu=GPU, volumes={DATA_ROOT: vol}, timeout=1200, image=image)
 def setup():
-    print("📦 SETUP START")
+    print("\n📦 STARTING SETUP...\n")
 
-    # Clone ComfyUI if not installed
+    # Clone Comfy
     if not (BASE / "main.py").exists():
+        print("📥 Cloning ComfyUI...")
         BASE.parent.mkdir(parents=True, exist_ok=True)
         run(f"git clone https://github.com/comfyanonymous/ComfyUI {BASE}")
-
+    else:
+        print("🔄 Updating ComfyUI...")
     run("git pull --ff-only", cwd=BASE)
 
-    # ComfyUI Manager
-    mgr = BASE / "custom_nodes" / "ComfyUI-Manager"
-    if mgr.exists():
-        run("git pull --ff-only", cwd=mgr)
-    else:
-        run(f"git clone https://github.com/ltdrdata/ComfyUI-Manager.git custom_nodes/ComfyUI-Manager", cwd=BASE)
-
     # Custom Nodes
+    print("\n📦 Installing Custom Nodes...\n")
     nodes = {
+        "ComfyUI-Manager": "https://github.com/ltdrdata/ComfyUI-Manager.git",
         "rgthree-comfy": "https://github.com/rgthree/rgthree-comfy.git",
-        "comfyui-impact-pack": "https://github.com/ltdrdata/ComfyUI-Impact-Pack.git",
-        "ComfyUI-ReActor": "https://github.com/Gourieff/ComfyUI-ReActor.git",
-        "ComfyUI-SUPIR": "https://github.com/cubiq/ComfyUI-SUPIR.git",
-        "ComfyUI-InsightFace": "https://github.com/cubiq/ComfyUI-InsightFace.git",
-        "ComfyUI_essentials": "https://github.com/cubiq/ComfyUI_essentials.git",
-        "ComfyUI_IPAdapter_plus": "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git",
-        "ComfyUI-KJNodes": "https://github.com/kijai/ComfyUI-KJNodes.git",
+        "Impact-Pack": "https://github.com/ltdrdata/ComfyUI-Impact-Pack.git",
+        "ReActor": "https://github.com/Gourieff/ComfyUI-ReActor.git",
+        "SUPIR": "https://github.com/cubiq/ComfyUI-SUPIR.git",
+        "InsightFace": "https://github.com/cubiq/ComfyUI-InsightFace.git",
+        "Essentials": "https://github.com/cubiq/ComfyUI_essentials.git",
+        "IPAdapter+": "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git",
+        "KJNodes": "https://github.com/kijai/ComfyUI-KJNodes.git",
     }
 
     for name, repo in nodes.items():
         dst = BASE / "custom_nodes" / name
-        if dst.exists(): shutil.rmtree(dst)
+        if dst.exists():
+            shutil.rmtree(dst)
+        print(f"🔧 Installing Node: {name}")
         try:
-            print(f"🔧 Installing node: {name}")
             run(f"git clone --depth 1 {repo} {dst}")
         except:
             print(f"⚠️ Failed installing node: {name}")
 
     # InsightFace buffalo_l
+    print("\n📦 Installing buffalo_l face model...\n")
     face_dir = Path(DATA_ROOT, ".insightface", "models")
     face_dir.mkdir(parents=True, exist_ok=True)
 
@@ -131,40 +139,51 @@ def setup():
             z.extractall(face_dir)
         zipf.unlink()
 
-    # FLUX Models
+    # MODELS: FLUX (repo baru: Black Forest Labs)
+    print("\n📦 Downloading FLUX models...\n")
+
     models = [
+        # FLUX main checkpoint
         ("checkpoints", "flux1-dev-fp8.safetensors", "camenduru/FLUX.1-dev"),
-        ("vae/FLUX", "ae.safetensors", "comfyanonymous/flux_vae"),
-        ("clip/FLUX", "t5xxl_fp8_e4m3fn.safetensors", "comfyanonymous/flux_text_encoders"),
-        ("clip/FLUX", "clip_l.safetensors", "comfyanonymous/flux_text_encoders"),
+
+        # FLUX VAE
+        ("vae/FLUX", "ae.safetensors", "black-forest-labs/FLUX.1-dev"),
+
+        # FLUX CLIP + T5 encoders
+        ("clip/FLUX", "clip_l.safetensors", "black-forest-labs/FLUX.1-dev"),
+        ("clip/FLUX", "text_encoder.t5xxl.fp8_e4m3fn.safetensors", "black-forest-labs/FLUX.1-dev"),
     ]
 
     for sub, fn, repo in models:
-        if not (BASE / "models" / sub / fn).exists():
-            print(f"⬇️ Downloading model: {fn}")
+        path = BASE / "models" / sub / fn
+        if not path.exists():
+            print(f"⬇️ Downloading {fn}...")
             hf_get(sub, fn, repo)
+        else:
+            print(f"✔ {fn} already exists.")
 
     vol.commit()
-    print("✅ SETUP COMPLETED")
+    print("\n✅ SETUP COMPLETED\n")
 
 # -------------------------------------------------------
-# LAUNCH Function (With Live Log Stream)
+# LAUNCH (WITH LIVE LOG STREAM)
 # -------------------------------------------------------
 @app.function(gpu=GPU, volumes={DATA_ROOT: vol}, timeout=86400, image=image)
 def launch():
-    print("🔥 Starting ComfyUI...\n=====================\n")
+    print("\n🔥 Starting ComfyUI server...\n")
     os.chdir(BASE)
 
     proc = subprocess.Popen(
         ["python3", "main.py", "--listen", "0.0.0.0", "--port", "8188"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True
+        text=True,
+        bufsize=1
     )
 
-    # STREAM ALL LOGS TO COLAB
+    # STREAM LOGS LIVE
     for line in proc.stdout:
         print(line, end="")
 
     proc.wait()
-    print(f"\n⚠️ ComfyUI exited with code: {proc.returncode}")
+    print(f"\n⚠️ ComfyUI exited with code {proc.returncode}\n")
