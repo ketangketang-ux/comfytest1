@@ -42,8 +42,12 @@ image = (
         "insightface",
         "onnxruntime-gpu",
         "tqdm",
-        "requests"
-    )
+        "requests",
+        "einops",
+        "opencv-python",
+        "pillow",
+)
+
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
