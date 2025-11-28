@@ -51,7 +51,6 @@ image = (
     "safetensors",
     "scipy",
     "transformers",
-    "tokenizers",
     "aiohttp",
     "packaging",
     "lmdb",
