@@ -1,5 +1,7 @@
 # =======================================================
-#  ComfyUI on Modal – V8 FINAL (HF TOKEN + CIVITAI TOKEN)
+#  ComfyUI on Modal – V9 FINAL
+#  HF TOKEN + CIVITAI TOKEN (SECRET FIXED)
+#  Modal CLI 1.2.1 Compatible
 # =======================================================
 import os
 import shutil
@@ -11,20 +13,21 @@ import requests
 import modal
 from huggingface_hub import hf_hub_download, login as hf_login
 
-# -------------------------------------------------------
-# App Config
-# -------------------------------------------------------
+# =======================================================
+#  APP CONFIG
+# =======================================================
 app = modal.App("comfyui-2025")
 
 DATA_ROOT = "/data/comfy"
 BASE = Path(DATA_ROOT, "ComfyUI")
+
 GPU = "L4"
 
 vol = modal.Volume.from_name("comfyui-vol", create_if_missing=True)
 
-# -------------------------------------------------------
-# Image Base
-# -------------------------------------------------------
+# =======================================================
+#  BASE IMAGE
+# =======================================================
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install(
@@ -37,10 +40,9 @@ image = (
     )
     .run_commands(
         "python3 -m pip install --upgrade pip wheel setuptools",
-        "pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121"
+        "pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121",
     )
     .pip_install(
-        # core
         "huggingface_hub[hf_transfer]",
         "requests",
         "tqdm",
@@ -50,36 +52,35 @@ image = (
         "psutil",
         "safetensors",
 
-        # image libs
+        # Image libs
         "opencv-python",
         "scipy",
 
-        # required by nodes
+        # Node requirements
         "aiohttp",
         "packaging",
         "lmdb",
         "pytorch_lightning",
 
-        # face + onnx
+        # SUPIR / InsightFace
         "insightface",
         "onnxruntime-gpu",
     )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
-# -------------------------------------------------------
-# Helpers
-# -------------------------------------------------------
+# =======================================================
+#  HELPERS
+# =======================================================
 def run(cmd, cwd=None):
     subprocess.run(cmd, shell=True, check=True, cwd=cwd)
 
 def hf_download(subdir, filename, repo):
-    """Download HF models using secret token."""
+    """Download HuggingFace models using Modal Secret."""
     token = os.getenv("HF_TOKEN")
     if not token:
-        raise RuntimeError("HF_TOKEN is missing from Modal secrets!")
+        raise RuntimeError("HF_TOKEN not found in secret!")
 
-    # login first
     hf_login(token)
 
     dest = BASE / "models" / subdir
@@ -97,19 +98,18 @@ def hf_download(subdir, filename, repo):
 
     shutil.move(tmp, dest / filename)
 
-def civitai_download(model_id, filename, subdir="checkpoints"):
-    """Download from Civitai using secret token."""
+def civitai_download(model_id, filename, subdir="loras"):
+    """Download model/LORA from Civitai using secret token."""
     token = os.getenv("CIVITAI_TOKEN")
     if not token:
-        raise RuntimeError("CIVITAI_TOKEN missing!")
+        raise RuntimeError("CIVITAI_TOKEN not found!")
 
     url = f"https://civitai.com/api/v1/model-versions/{model_id}/download"
+    headers = {"Authorization": f"Bearer {token}"}
 
     print(f"⬇️ Civitai: {model_id} → {filename}")
 
-    headers = {"Authorization": f"Bearer {token}"}
     r = requests.get(url, headers=headers)
-
     if r.status_code != 200:
         raise RuntimeError(f"Civitai download failed: {r.text}")
 
@@ -119,26 +119,26 @@ def civitai_download(model_id, filename, subdir="checkpoints"):
     with open(dest / filename, "wb") as f:
         f.write(r.content)
 
-# -------------------------------------------------------
-# SETUP
-# -------------------------------------------------------
+# =======================================================
+#  SETUP
+# =======================================================
 @app.function(
     gpu=GPU,
     volumes={DATA_ROOT: vol},
     timeout=1800,
     image=image,
     secrets=[
-        modal.Secret.from_name("hf_secret"),
-        modal.Secret.from_name("civitai_secret")
+        modal.Secret.from_name("huggingface-secret"),
+        modal.Secret.from_name("civitai-token"),
     ],
 )
 def setup():
-    print("\n📦 SETUP START\n")
+    print("\n📦 START SETUP...\n")
 
-    # HuggingFace login
+    # Login HF
     hf_login(os.getenv("HF_TOKEN"))
 
-    # Clone Comfy
+    # Clone ComfyUI
     if not (BASE / "main.py").exists():
         print("📥 Clone ComfyUI...")
         BASE.parent.mkdir(parents=True, exist_ok=True)
@@ -147,8 +147,8 @@ def setup():
         print("🔄 Updating ComfyUI...")
         run("git pull --ff-only", cwd=BASE)
 
-    # Custom Nodes
-    print("\n📦 Installing custom nodes...\n")
+    # Custom nodes
+    print("\n📦 Installing nodes...\n")
     nodes = {
         "ComfyUI-Manager": "https://github.com/ltdrdata/ComfyUI-Manager.git",
         "rgthree-comfy": "https://github.com/rgthree/rgthree-comfy.git",
@@ -165,14 +165,11 @@ def setup():
         dst = BASE / "custom_nodes" / name
         if dst.exists():
             shutil.rmtree(dst)
-        print(f"🔧 Node: {name}")
-        try:
-            run(f"git clone --depth 1 {repo} {dst}")
-        except:
-            print(f"⚠️ FAIL install: {name}")
+        print(f"🔧 Install: {name}")
+        run(f"git clone --depth 1 {repo} {dst}")
 
     # InsightFace buffalo_l
-    print("\n📦 Installing buffalo_l...")
+    print("\n📦 Installing buffalo_l face model...")
     face_dir = Path(DATA_ROOT, ".insightface", "models")
     face_dir.mkdir(parents=True, exist_ok=True)
 
@@ -183,9 +180,9 @@ def setup():
             z.extractall(face_dir)
         zipf.unlink()
 
-    # ---------------------------------------------------
-    # Download Flux Models (via HF)
-    # ---------------------------------------------------
+    # =======================================================
+    #  DOWNLOAD FLUX MODELS
+    # =======================================================
     print("\n📦 Downloading FLUX models...\n")
 
     models = [
@@ -196,23 +193,22 @@ def setup():
     ]
 
     for sub, fn, repo in models:
-        print(f"Downloading {fn}...")
         hf_download(sub, fn, repo)
 
     vol.commit()
     print("\n✅ SETUP DONE\n")
 
-# -------------------------------------------------------
-# LAUNCH (LOG STREAM)
-# -------------------------------------------------------
+# =======================================================
+#  LAUNCH
+# =======================================================
 @app.function(
     gpu=GPU,
     volumes={DATA_ROOT: vol},
     timeout=86400,
     image=image,
     secrets=[
-        modal.Secret.from_name("hf_secret"),
-        modal.Secret.from_name("civitai_secret")
+        modal.Secret.from_name("huggingface-secret"),
+        modal.Secret.from_name("civitai-token"),
     ],
 )
 def launch():
