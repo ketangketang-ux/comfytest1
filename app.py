@@ -1,160 +1,121 @@
 import os
 import subprocess
-from pathlib import Path
-import threading
-
 import modal
-from modal import asgi_app
+from huggingface_hub import hf_hub_download
 
-from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
+# ============================================================
+#  APP & CONFIG
+# ============================================================
+app = modal.App("comfyui-2025")
 
-# -------------------
-# CONFIG
-# -------------------
-APP_NAME = "comfyui-2025"
+GPU = "A100-40GB"
+
+VOL = modal.Volume.from_name("comfy-vol", create_if_missing=True)
+
 DATA_ROOT = "/data/comfy"
-BASE = "/data/comfy/ComfyUI"
+COMFY_DIR = f"{DATA_ROOT}/ComfyUI"
+MODEL_DIR = f"{COMFY_DIR}/models"
 
-GPU = "A100-40GB"   # versi kompatibel universal
+# ============================================================
+#  UTILITIES
+# ============================================================
+def run(cmd, cwd=None):
+    print(f"▶ {cmd}")
+    subprocess.run(cmd, shell=True, check=True, cwd=cwd)
 
-# -------------------
-# IMAGE
-# -------------------
-image = (
-    modal.Image.debian_slim()
-    .apt_install(
-        [
-            "git",
-            "ffmpeg",
-            "libgl1",
-            "libglib2.0-0",
-        ]
-    )
-    .pip_install(
-        [
-            "fastapi",
-            "uvicorn",
-            "aiohttp",
-            "alembic",
-            "einops",
-            "huggingface_hub[hf_transfer]",
-            "insightface",
-            "kornia",
-            "lmdb",
-            "numpy",
-            "onnxruntime-gpu",
-            "opencv-python",
-            "packaging",
-            "piexif",
-            "pillow",
-            "psutil",
-            "pydantic-settings",
-            "pytorch_lightning",
-            "requests",
-            "safetensors",
-            "scipy",
-            "segment-anything",
-            "spandrel",
-            "torchsde",
-            "tqdm",
-            "av",
-            "comfyui-embedded-docs",
-            "comfyui-workflow-templates",
-        ]
-    )
-)
 
-vol = modal.Volume.from_name("comfy-volume", create_if_missing=True)
-app = modal.App(APP_NAME)
-
-# -------------------
-# ASGI FastAPI
-# -------------------
-web = FastAPI()
-
-@web.get("/")
-def home():
-    return RedirectResponse("/comfy")
-
-@web.get("/status")
-def status():
-    return {"status": "running"}
-
-# -------------------
-# Setup (clone ComfyUI + models)
-# -------------------
+# ============================================================
+#  SETUP — CLONE + INSTALL + DOWNLOAD FLUX MODELS
+# ============================================================
 @app.function(
-    image=image,
-    gpu=GPU,
-    volumes={DATA_ROOT: vol},
-    timeout=10000,
-    secrets=[modal.Secret.from_name("huggingface-secret")]
+    timeout=3600,
+    volumes={DATA_ROOT: VOL},
+    secrets=[
+        modal.Secret.from_name("huggingface-secret"),
+        modal.Secret.from_name("civitai-token"),
+    ],
 )
 def setup():
-    import huggingface_hub as hf
+    print("🚀 Setup ComfyUI mulai...\n")
 
-    print("📥 Setup ComfyUI...")
     os.makedirs(DATA_ROOT, exist_ok=True)
-    os.chdir(DATA_ROOT)
+    os.makedirs(MODEL_DIR, exist_ok=True)
 
+    # -----------------------
     # Clone ComfyUI
-    if not Path(BASE).exists():
-        subprocess.run(["git", "clone", "https://github.com/comfyanonymous/ComfyUI.git"], check=True)
+    # -----------------------
+    if not os.path.exists(COMFY_DIR):
+        print("📥 Clone ComfyUI...")
+        run(f"git clone https://github.com/comfyanonymous/ComfyUI.git {COMFY_DIR}")
+    else:
+        print("✔ ComfyUI sudah ada, skip clone.")
 
-    # Download FLUX models
-    print("📥 Downloading FLUX models...")
-    hf.login(token=os.environ.get("HF_TOKEN"))
+    # -----------------------
+    # Install deps
+    # -----------------------
+    print("\n📦 Install dependencies...")
+    run("python3 -m pip install --upgrade pip", cwd=COMFY_DIR)
+    run("python3 -m pip install -r requirements.txt", cwd=COMFY_DIR)
 
-    flux_files = [
+    # Minimal essentials
+    run("python3 -m pip install safetensors pillow numpy tqdm requests")
+
+    # -----------------------
+    # DOWNLOAD FLUX MODELS (NEW STRUCTURE)
+    # -----------------------
+    print("\n📥 Downloading FLUX models...")
+
+    FLUX_REPO = "black-forest-labs/FLUX.1-dev"
+    FLUX_FILES = [
         "ae.safetensors",
         "flux1-dev.safetensors",
-        "flux_text_encoder/model.safetensors",
-        "flux_text_encoder/config.json",
+        "flux1.txt",
+        "config.json",
     ]
 
-    for f in flux_files:
-        dst = os.path.join(BASE, "models/flux", f)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        hf.hf_hub_download(
-            repo_id="black-forest-labs/FLUX.1-dev",
+    FLUX_PATH = f"{MODEL_DIR}/flux"
+    os.makedirs(FLUX_PATH, exist_ok=True)
+
+    for f in FLUX_FILES:
+        print(f"⬇️ Download: {f}")
+        hf_hub_download(
+            repo_id=FLUX_REPO,
             filename=f,
-            local_dir=os.path.dirname(dst),
-            local_dir_use_symlinks=False,
+            local_dir=FLUX_PATH,
+            token=os.environ.get("HF_TOKEN"),
         )
 
-    vol.commit()
-    print("✅ Setup complete!")
+    print("\n🎉 SETUP SELESAI — MODEL TERPASANG\n")
+    return "Setup OK"
 
-# -------------------
-# Launch (ASGI endpoint + background ComfyUI)
-# -------------------
+
+# ============================================================
+#  LAUNCH — RUN COMFYUI SERVER
+# ============================================================
 @app.function(
-    image=image,
     gpu=GPU,
-    volumes={DATA_ROOT: vol},
     timeout=86400,
-    secrets=[modal.Secret.from_name("huggingface-secret")]
+    volumes={DATA_ROOT: VOL},
 )
-@asgi_app()   # <--- WAJIB versi MODAL kamu
+@modal.asgi_app()
 def launch():
-    print("🔥 Launching ComfyUI...")
+    from fastapi import FastAPI
+    import uvicorn
 
-    os.chdir(BASE)
+    api = FastAPI()
 
-    # Jalankan ComfyUI sebagai thread background
-    def start_backend():
-        subprocess.Popen(
-            ["python3", "main.py", "--listen", "0.0.0.0", "--port", "8188"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+    @api.get("/")
+    def root():
+        return {"msg": "ComfyUI running via Modal"}
 
-    t = threading.Thread(target=start_backend, daemon=True)
-    t.start()
+    # Jalankan ComfyUI
+    def start_comfy():
+        print("🔥 Menjalankan ComfyUI...")
+        os.chdir(COMFY_DIR)
+        run("python3 main.py --listen 0.0.0.0 --port 8188")
 
-    print("🚀 Backend berjalan di port 8188")
-    print("👉 Akses UI via /comfy")
+    # Jalankan background process
+    import threading
+    threading.Thread(target=start_comfy, daemon=True).start()
 
-    # return ASGI app
-    return web
+    return api
