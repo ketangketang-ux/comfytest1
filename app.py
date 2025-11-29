@@ -214,6 +214,7 @@ def setup():
 # -----------------------
 # Launch ComfyUI
 # -----------------------
+@app.web_server(port=80)
 @app.function(
     gpu=GPU,
     volumes={DATA_ROOT: vol},
@@ -224,22 +225,13 @@ def setup():
         modal.Secret.from_name("civitai-token"),
     ],
 )
-@modal.web_server(port=80)   # WAJIB untuk munculin URL
 def launch():
-    print("\n🔥 Launching ComfyUI on Modal public URL...\n")
     os.chdir(BASE)
 
-    # Jalankan ComfyUI di port 80 (WAJIB juga)
-    proc = subprocess.Popen(
-        ["python3", "main.py", "--listen", "0.0.0.0", "--port", "80"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+    # Start ComfyUI automatically on container boot
+    subprocess.Popen(
+        ["python3", "main.py", "--listen", "0.0.0.0", "--port", "80"]
     )
 
-    for line in proc.stdout:
-        print(line, end="")
-
-    proc.wait()
-    print(f"\n⚠️ ComfyUI exited with code {proc.returncode}")
+    # simple landing message
+    return "🔥 ComfyUI sedang berjalan di backend... silakan buka /"
