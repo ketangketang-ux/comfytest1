@@ -214,7 +214,17 @@ def setup():
 # -----------------------
 # Launch ComfyUI
 # -----------------------
-@app.web_server(port=80)
+from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+
+# ASGI app for Modal web function
+web = FastAPI()
+
+@web.get("/")
+def root():
+    # redirect user to comfy frontend
+    return RedirectResponse("/comfy")
+
 @app.function(
     gpu=GPU,
     volumes={DATA_ROOT: vol},
@@ -222,16 +232,22 @@ def setup():
     image=image,
     secrets=[
         modal.Secret.from_name("huggingface-secret"),
-        modal.Secret.from_name("civitai-token"),
+        modal.Secret.from_name("civitai-token")
     ],
+    asgi_app=web
 )
 def launch():
+    print("\n🔥 Starting ComfyUI backend...\n")
+
     os.chdir(BASE)
 
-    # Start ComfyUI automatically on container boot
+    # jalankan ComfyUI pada port 8188 (aman)
     subprocess.Popen(
-        ["python3", "main.py", "--listen", "0.0.0.0", "--port", "80"]
+        ["python3", "main.py", "--listen", "0.0.0.0", "--port", "8188"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
 
-    # simple landing message
-    return "🔥 ComfyUI sedang berjalan di backend... silakan buka /"
+    print("🚀 ComfyUI backend started! Frontend at /comfy")
+    return {"status": "running"}
