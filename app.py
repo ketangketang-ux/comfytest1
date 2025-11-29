@@ -1,29 +1,14 @@
 import os
 import subprocess
+import threading
 import modal
 from huggingface_hub import snapshot_download
+from fastapi import FastAPI
+from fastapi.responses import Response
+import httpx
+import asyncio
 
-# ============================================================
-#  IMAGE — fix fastapi, uvicorn, huggingface_hub, comfy deps
-# ============================================================
-image = (
-    modal.Image.debian_slim()
-    .pip_install(
-        "fastapi",
-        "uvicorn",
-        "huggingface_hub[hf_transfer]",
-        "requests",
-        "tqdm",
-        "safetensors",
-        "numpy",
-        "pillow"
-    )
-)
-
-# ============================================================
-#  APP CONFIG
-# ============================================================
-app = modal.App("comfyui-2025", image=image)
+app = modal.App("comfyui-server")
 
 GPU = "A100-40GB"
 VOL = modal.Volume.from_name("comfy-vol", create_if_missing=True)
@@ -34,67 +19,53 @@ MODEL_DIR = f"{COMFY}/models"
 CHECKPOINTS = f"{MODEL_DIR}/checkpoints"
 
 
-# ============================================================
-#  UTIL
-# ============================================================
+# -----------------------
+# UTIL
+# -----------------------
 def run(cmd, cwd=None):
-    print(f"▶ {cmd}")
+    print("▶", cmd)
     subprocess.run(cmd, shell=True, check=True, cwd=cwd)
 
 
-# ============================================================
-#  AUTO-DOWNLOAD BASE MODEL (FLUX .safetensors)
-# ============================================================
 def ensure_models():
-    """Download base model jika belum ada"""
+    """Auto-download FLUX checkpoint jika belum ada"""
     os.makedirs(CHECKPOINTS, exist_ok=True)
+    dst = f"{CHECKPOINTS}/flux-dev.safetensors"
 
-    flux_ckpt = f"{CHECKPOINTS}/flux-dev.safetensors"
-
-    if not os.path.exists(flux_ckpt):
-        print("📥 Downloading FLUX checkpoint (.safetensors)...")
-
+    if not os.path.exists(dst):
+        print("📥 Downloading FLUX checkpoint...")
         snapshot_download(
             repo_id="black-forest-labs/FLUX.1-dev.safetensors",
             local_dir=CHECKPOINTS,
-            local_dir_use_symlinks=False,
-            token=os.environ["HF_TOKEN"]
+            token=os.environ["HF_TOKEN"],
+            local_dir_use_symlinks=False
         )
-
-        print(f"✔ FLUX checkpoint saved to: {flux_ckpt}")
+        print("✔ FLUX checkpoint selesai")
     else:
-        print(f"✔ FLUX checkpoint sudah ada: {flux_ckpt}")
+        print("✔ Model sudah ada")
 
 
-# ============================================================
-#  SETUP — INSTALL COMFYUI
-# ============================================================
-@app.function(
-    timeout=3600,
-    volumes={DATA: VOL},
-)
+# -----------------------
+# SETUP
+# -----------------------
+@app.function(timeout=3600, volumes={DATA: VOL})
 def setup():
-    print("🚀 Setup ComfyUI mulai...\n")
-
     os.makedirs(DATA, exist_ok=True)
 
     if not os.path.exists(COMFY):
-        print("📥 Clone ComfyUI...")
         run(f"git clone https://github.com/comfyanonymous/ComfyUI.git {COMFY}")
     else:
-        print("✔ ComfyUI sudah ada, skip clone.")
+        print("✔ Repo ComfyUI sudah ada")
 
-    print("\n📦 Install requirements...")
-    run("python3 -m pip install --upgrade pip", cwd=COMFY)
-    run("python3 -m pip install -r requirements.txt", cwd=COMFY)
+    run("pip install --upgrade pip", cwd=COMFY)
+    run("pip install -r requirements.txt", cwd=COMFY)
 
-    print("\n🎉 SETUP SELESAI\n")
-    return "Setup OK"
+    print("✔ Setup selesai")
 
 
-# ============================================================
-#  LAUNCH — ASGI
-# ============================================================
+# -----------------------
+# BACKEND SERVER (Modal → ComfyUI passthrough)
+# -----------------------
 @app.function(
     gpu=GPU,
     timeout=86400,
@@ -103,28 +74,34 @@ def setup():
 )
 @modal.asgi_app()
 def launch():
-    from fastapi import FastAPI
-    import threading
-
     api = FastAPI()
 
-    @api.get("/")
-    def home():
-        return {
-            "status": "running",
-            "info": "ComfyUI berjalan di port 8188",
-            "docs": "/docs"
-        }
-
+    # Start comfy in background thread
     def start_comfy():
-        print("🔥 Menjalankan ComfyUI...")
-
-        # 🔥 Auto-download FLUX sebelum ComfyUI jalan
         ensure_models()
-
         os.chdir(COMFY)
         run("python3 main.py --listen 0.0.0.0 --port 8188")
 
     threading.Thread(target=start_comfy, daemon=True).start()
+
+    # Forward ALL requests to ComfyUI backend
+    client = httpx.AsyncClient(base_url="http://127.0.0.1:8188")
+
+    @api.api_route("/{path:path}", methods=["GET", "POST"])
+    async def proxy(path: str, request):
+        url = f"http://127.0.0.1:8188/{path}"
+        method = request.method
+
+        if method == "GET":
+            resp = await client.get(url)
+        else:
+            body = await request.body()
+            resp = await client.post(url, content=body, headers=request.headers)
+
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=resp.headers
+        )
 
     return api
