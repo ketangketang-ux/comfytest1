@@ -18,7 +18,7 @@ APP_NAME = "comfyui-2025"
 BASE = "/data/comfy/ComfyUI"
 DATA_ROOT = "/data/comfy"
 
-GPU = modal.gpu.A100(memory=40)
+GPU = modal.gpu.A100()
 
 # ----------------------
 # BUILD IMAGE
