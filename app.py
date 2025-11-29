@@ -1,28 +1,26 @@
-# ===========================
-#  ComfyUI on Modal – CLEAN
-#  FASTAPI + ASGI Version V15
-# ===========================
-
 import os
 import subprocess
 from pathlib import Path
+import threading
+
 import modal
 from modal import asgi_app
+
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
-# ----------------------
+# -------------------
 # CONFIG
-# ----------------------
+# -------------------
 APP_NAME = "comfyui-2025"
-BASE = "/data/comfy/ComfyUI"
 DATA_ROOT = "/data/comfy"
+BASE = "/data/comfy/ComfyUI"
 
-GPU = modal.gpu.A100()
+GPU = "A100-40GB"   # versi kompatibel universal
 
-# ----------------------
-# BUILD IMAGE
-# ----------------------
+# -------------------
+# IMAGE
+# -------------------
 image = (
     modal.Image.debian_slim()
     .apt_install(
@@ -35,11 +33,8 @@ image = (
     )
     .pip_install(
         [
-            # FastAPI + Uvicorn (WAJIB)
             "fastapi",
             "uvicorn",
-
-            # Core deps required by Comfy
             "aiohttp",
             "alembic",
             "einops",
@@ -70,109 +65,96 @@ image = (
     )
 )
 
-# ----------------------
-# VOLUME
-# ----------------------
 vol = modal.Volume.from_name("comfy-volume", create_if_missing=True)
-
 app = modal.App(APP_NAME)
 
-# ----------------------
-# ASGI WEB APP
-# ----------------------
+# -------------------
+# ASGI FastAPI
+# -------------------
 web = FastAPI()
 
 @web.get("/")
-def index():
-    # alihkan user ke frontend ComfyUI
+def home():
     return RedirectResponse("/comfy")
 
 @web.get("/status")
 def status():
     return {"status": "running"}
 
-# ----------------------
-# SETUP: Clone ComfyUI + install model FLUX
-# ----------------------
+# -------------------
+# Setup (clone ComfyUI + models)
+# -------------------
 @app.function(
     image=image,
     gpu=GPU,
-    timeout=6000,
     volumes={DATA_ROOT: vol},
-    secrets=[
-        modal.Secret.from_name("huggingface-secret"),
-        modal.Secret.from_name("civitai-token"),
-    ],
+    timeout=10000,
+    secrets=[modal.Secret.from_name("huggingface-secret")]
 )
 def setup():
     import huggingface_hub as hf
 
-    print("\n📥 Setup ComfyUI...")
-
+    print("📥 Setup ComfyUI...")
     os.makedirs(DATA_ROOT, exist_ok=True)
     os.chdir(DATA_ROOT)
 
     # Clone ComfyUI
     if not Path(BASE).exists():
-        subprocess.run(
-            ["git", "clone", "https://github.com/comfyanonymous/ComfyUI.git"],
-            check=True,
-        )
-
-    # Apply symlink fix
-    models_dir = "/data/models"
-    os.makedirs(models_dir, exist_ok=True)
+        subprocess.run(["git", "clone", "https://github.com/comfyanonymous/ComfyUI.git"], check=True)
 
     # Download FLUX models
     print("📥 Downloading FLUX models...")
     hf.login(token=os.environ.get("HF_TOKEN"))
 
-    for fn in [
+    flux_files = [
         "ae.safetensors",
         "flux1-dev.safetensors",
         "flux_text_encoder/model.safetensors",
         "flux_text_encoder/config.json",
-    ]:
-        dst = f"{BASE}/models/flux/{fn}"
+    ]
+
+    for f in flux_files:
+        dst = os.path.join(BASE, "models/flux", f)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         hf.hf_hub_download(
             repo_id="black-forest-labs/FLUX.1-dev",
-            filename=fn,
+            filename=f,
             local_dir=os.path.dirname(dst),
             local_dir_use_symlinks=False,
         )
 
     vol.commit()
-    print("✅ Setup selesai!")
+    print("✅ Setup complete!")
 
-# ----------------------
-# LAUNCH → ASGI WEB FUNCTION + backend ComfyUI
-# ----------------------
+# -------------------
+# Launch (ASGI endpoint + background ComfyUI)
+# -------------------
 @app.function(
     image=image,
     gpu=GPU,
-    timeout=86400,
     volumes={DATA_ROOT: vol},
-    secrets=[
-        modal.Secret.from_name("huggingface-secret"),
-        modal.Secret.from_name("civitai-token"),
-    ],
+    timeout=86400,
+    secrets=[modal.Secret.from_name("huggingface-secret")]
 )
-@asgi_app(web)
+@asgi_app()   # <--- WAJIB versi MODAL kamu
 def launch():
-    print("\n🔥 Launching ComfyUI backend...\n")
+    print("🔥 Launching ComfyUI...")
 
     os.chdir(BASE)
 
-    # Start Comfy backend
-    subprocess.Popen(
-        ["python3", "main.py", "--listen", "0.0.0.0", "--port", "8188"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    # Jalankan ComfyUI sebagai thread background
+    def start_backend():
+        subprocess.Popen(
+            ["python3", "main.py", "--listen", "0.0.0.0", "--port", "8188"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
-    print("🚀 ComfyUI backend berjalan di dalam container.")
-    print("👉 Akses UI di /comfy dari URL Modal!")
+    t = threading.Thread(target=start_backend, daemon=True)
+    t.start()
 
-    # Return ASGI web app
+    print("🚀 Backend berjalan di port 8188")
+    print("👉 Akses UI via /comfy")
+
+    # return ASGI app
     return web
