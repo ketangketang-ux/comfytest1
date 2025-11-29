@@ -224,13 +224,14 @@ def setup():
         modal.Secret.from_name("civitai-token"),
     ],
 )
+@modal.web_server(port=80)   # WAJIB untuk munculin URL
 def launch():
-    print("\n🔥 Launching ComfyUI...\n")
+    print("\n🔥 Launching ComfyUI on Modal public URL...\n")
     os.chdir(BASE)
 
-    # run main; logs are streamed to Modal (and to your modal run)
+    # Jalankan ComfyUI di port 80 (WAJIB juga)
     proc = subprocess.Popen(
-        ["python3", "main.py", "--listen", "0.0.0.0", "--port", "8188"],
+        ["python3", "main.py", "--listen", "0.0.0.0", "--port", "80"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
