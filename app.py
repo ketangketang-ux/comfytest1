@@ -4,15 +4,15 @@ import requests
 import modal
 from huggingface_hub import snapshot_download
 
-# ---------------------------------------------------
-# IMAGE — install dependencies (requests, hf hub, dll)
-# ---------------------------------------------------
+# =============================================================================
+# IMAGE — install dependencies
+# =============================================================================
 image = (
     modal.Image.debian_slim()
         .pip_install(
             "requests",
             "huggingface_hub",
-            "safetensors",
+            "safetensors"
         )
 )
 
@@ -32,42 +32,46 @@ def run(cmd, cwd=None):
     subprocess.run(cmd, shell=True, check=True, cwd=cwd)
 
 
-# ---------------------------------------------------
-# DOWNLOAD BASEMODEL (CIVITAI)
-# ---------------------------------------------------
+# =============================================================================
+# 1) DOWNLOAD BASEMODEL (Civitai)
+# =============================================================================
 @app.function(
     image=image,
     timeout=1200,
     volumes={"/data": VOL},
-    secrets=[modal.Secret.from_name("civitai-token")],
+    secrets=[modal.Secret.from_name("civitai-token")]  # SECRET NAME
 )
 def download_basemodel():
+
     os.makedirs(CHECKPOINTS, exist_ok=True)
 
-    token = os.environ.get("CIVITAI_TOKEN")
+    token = os.environ.get("CIVITAI_TOKEN")  # SECRET KEY
     if not token:
-        raise Exception("❌ Secret 'civitai-token' tidak punya key CIVITAI_TOKEN")
+        raise Exception("❌ Secret 'civitai-token' harus punya KEY 'CIVITAI_TOKEN'!")
 
     url = "https://civitai.com/api/download/models/2285644?type=Model&format=SafeTensor&size=pruned&fp=fp16"
+
     dst = f"{CHECKPOINTS}/basemodel_fp16.safetensors"
 
-    print(f"⬇️ Downloading Civitai Base Model ke {dst} ...")
+    print(f"⬇️ Downloading base model dari Civitai ke {dst} ...")
 
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {
+        "Authorization": f"Bearer {token}"
+    }
 
     with requests.get(url, headers=headers, stream=True) as r:
         r.raise_for_status()
         with open(dst, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
+            for chunk in r.iter_content(1024 * 1024):
                 if chunk:
                     f.write(chunk)
 
-    print("🎉 DONE! Model tersimpan di volume.")
+    print("🎉 DONE! Base model tersimpan di volume.")
 
 
-# ---------------------------------------------------
-# SETUP COMFYUI
-# ---------------------------------------------------
+# =============================================================================
+# 2) SETUP COMFYUI
+# =============================================================================
 @app.function(
     image=image,
     timeout=3600,
@@ -84,12 +88,12 @@ def setup():
     run("pip install --upgrade pip", cwd=COMFY)
     run("pip install -r requirements.txt", cwd=COMFY)
 
-    print("✔ Setup selesai")
+    print("✔ Setup Selesai.")
 
 
-# ---------------------------------------------------
-# LAUNCH COMFYUI
-# ---------------------------------------------------
+# =============================================================================
+# 3) LAUNCH COMFYUI SERVER
+# =============================================================================
 @app.function(
     image=image,
     gpu=GPU,
@@ -99,7 +103,7 @@ def setup():
 )
 @modal.web_endpoint()
 def launch():
-    # pastikan model ada
+    print("📦 Checking model...")
     download_basemodel.call()
 
     print("🔥 Starting ComfyUI...")
