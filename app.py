@@ -5,14 +5,16 @@ import modal
 from huggingface_hub import snapshot_download
 
 # =============================================================================
-# IMAGE — install dependencies
+# IMAGE — fix: include FastAPI & Uvicorn (Modal update requires this)
 # =============================================================================
 image = (
     modal.Image.debian_slim()
         .pip_install(
             "requests",
             "huggingface_hub",
-            "safetensors"
+            "safetensors",
+            "fastapi[standard]",
+            "uvicorn"
         )
 )
 
@@ -39,13 +41,13 @@ def run(cmd, cwd=None):
     image=image,
     timeout=1200,
     volumes={"/data": VOL},
-    secrets=[modal.Secret.from_name("civitai-token")]  # SECRET NAME
+    secrets=[modal.Secret.from_name("civitai-token")]
 )
 def download_basemodel():
 
     os.makedirs(CHECKPOINTS, exist_ok=True)
 
-    token = os.environ.get("CIVITAI_TOKEN")  # SECRET KEY
+    token = os.environ.get("CIVITAI_TOKEN")
     if not token:
         raise Exception("❌ Secret 'civitai-token' harus punya KEY 'CIVITAI_TOKEN'!")
 
@@ -55,9 +57,7 @@ def download_basemodel():
 
     print(f"⬇️ Downloading base model dari Civitai ke {dst} ...")
 
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
+    headers = {"Authorization": f"Bearer {token}"}
 
     with requests.get(url, headers=headers, stream=True) as r:
         r.raise_for_status()
@@ -92,7 +92,7 @@ def setup():
 
 
 # =============================================================================
-# 3) LAUNCH COMFYUI SERVER
+# 3) LAUNCH COMFYUI (web endpoint)
 # =============================================================================
 @app.function(
     image=image,
@@ -101,7 +101,7 @@ def setup():
     volumes={DATA: VOL},
     secrets=[modal.Secret.from_name("civitai-token")],
 )
-@modal.web_endpoint()
+@modal.web_endpoint()   # boleh pakai @modal.fastapi_endpoint() juga
 def launch():
     print("📦 Checking model...")
     download_basemodel.call()
