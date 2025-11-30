@@ -1,41 +1,107 @@
 import os
+import subprocess
 import requests
 import modal
+from huggingface_hub import snapshot_download
+
+# ---------------------------------------------------
+# IMAGE — install dependencies (requests, hf hub, dll)
+# ---------------------------------------------------
+image = (
+    modal.Image.debian_slim()
+        .pip_install(
+            "requests",
+            "huggingface_hub",
+            "safetensors",
+        )
+)
 
 app = modal.App("comfyui-simple")
 
+GPU = "A100-40GB"
 VOL = modal.Volume.from_name("comfy-vol", create_if_missing=True)
-MODEL_DIR = "/data/comfy/ComfyUI/models/checkpoints"
 
+DATA = "/data/comfy"
+COMFY = f"{DATA}/ComfyUI"
+MODEL_DIR = f"{COMFY}/models"
+CHECKPOINTS = f"{MODEL_DIR}/checkpoints"
+
+
+def run(cmd, cwd=None):
+    print("▶", cmd)
+    subprocess.run(cmd, shell=True, check=True, cwd=cwd)
+
+
+# ---------------------------------------------------
+# DOWNLOAD BASEMODEL (CIVITAI)
+# ---------------------------------------------------
 @app.function(
-    timeout=600,
+    image=image,
+    timeout=1200,
     volumes={"/data": VOL},
-    secrets=[modal.Secret.from_name("civitai-token")]  # <<< INI NAMA SECRET
+    secrets=[modal.Secret.from_name("civitai-token")],
 )
 def download_basemodel():
+    os.makedirs(CHECKPOINTS, exist_ok=True)
 
-    os.makedirs(MODEL_DIR, exist_ok=True)
-
-    token = os.environ.get("CIVITAI_TOKEN")  # <<< KEY SECRET
+    token = os.environ.get("CIVITAI_TOKEN")
     if not token:
-        raise Exception("❌ CIVITAI_TOKEN tidak ditemukan di Modal Secret 'civitai-token'")
+        raise Exception("❌ Secret 'civitai-token' tidak punya key CIVITAI_TOKEN")
 
-    # URL base model
     url = "https://civitai.com/api/download/models/2285644?type=Model&format=SafeTensor&size=pruned&fp=fp16"
+    dst = f"{CHECKPOINTS}/basemodel_fp16.safetensors"
 
-    dst = f"{MODEL_DIR}/basemodel_fp16.safetensors"
+    print(f"⬇️ Downloading Civitai Base Model ke {dst} ...")
 
-    print(f"⬇️ Downloading Civitai base model ke {dst} ...")
-
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
+    headers = {"Authorization": f"Bearer {token}"}
 
     with requests.get(url, headers=headers, stream=True) as r:
         r.raise_for_status()
         with open(dst, "wb") as f:
-            for chunk in r.iter_content(1024 * 1024):
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     f.write(chunk)
 
-    print("🎉 DONE! Base model tersimpan di volume.")
+    print("🎉 DONE! Model tersimpan di volume.")
+
+
+# ---------------------------------------------------
+# SETUP COMFYUI
+# ---------------------------------------------------
+@app.function(
+    image=image,
+    timeout=3600,
+    volumes={DATA: VOL},
+)
+def setup():
+    os.makedirs(DATA, exist_ok=True)
+
+    if not os.path.exists(COMFY):
+        run(f"git clone https://github.com/comfyanonymous/ComfyUI.git {COMFY}")
+    else:
+        print("✔ ComfyUI repo sudah ada")
+
+    run("pip install --upgrade pip", cwd=COMFY)
+    run("pip install -r requirements.txt", cwd=COMFY)
+
+    print("✔ Setup selesai")
+
+
+# ---------------------------------------------------
+# LAUNCH COMFYUI
+# ---------------------------------------------------
+@app.function(
+    image=image,
+    gpu=GPU,
+    timeout=86400,
+    volumes={DATA: VOL},
+    secrets=[modal.Secret.from_name("civitai-token")],
+)
+@modal.web_endpoint()
+def launch():
+    # pastikan model ada
+    download_basemodel.call()
+
+    print("🔥 Starting ComfyUI...")
+    os.chdir(COMFY)
+    run("python3 main.py --listen 0.0.0.0 --port 8188")
