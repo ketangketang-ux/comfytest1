@@ -13,18 +13,10 @@ COMFY = f"{DATA}/ComfyUI"
 MODEL_DIR = f"{COMFY}/models"
 CHECKPOINTS = f"{MODEL_DIR}/checkpoints"
 
-
-# -----------------------------------------------------
-# Util
-# -----------------------------------------------------
 def run(cmd, cwd=None):
     print("▶", cmd)
     subprocess.run(cmd, shell=True, check=True, cwd=cwd)
 
-
-# -----------------------------------------------------
-# Auto-download model
-# -----------------------------------------------------
 def ensure_models():
     os.makedirs(CHECKPOINTS, exist_ok=True)
     ckpt = f"{CHECKPOINTS}/flux-dev.safetensors"
@@ -41,14 +33,9 @@ def ensure_models():
     else:
         print("✔ FLUX model exists")
 
-
-# -----------------------------------------------------
-# Setup (install ComfyUI)
-# -----------------------------------------------------
 @app.function(timeout=3600, volumes={DATA: VOL})
 def setup():
     os.makedirs(DATA, exist_ok=True)
-
     if not os.path.exists(COMFY):
         run(f"git clone https://github.com/comfyanonymous/ComfyUI.git {COMFY}")
     else:
@@ -56,13 +43,8 @@ def setup():
 
     run("pip install --upgrade pip", cwd=COMFY)
     run("pip install -r requirements.txt", cwd=COMFY)
-
     print("✔ Setup done")
 
-
-# -----------------------------------------------------
-# Backend ComfyUI (RUN WEB SERVER)
-# -----------------------------------------------------
 @app.function(
     gpu=GPU,
     timeout=86400,
@@ -72,7 +54,6 @@ def setup():
 @modal.web_endpoint()
 def launch():
     ensure_models()
-
     os.chdir(COMFY)
     print("🔥 Starting ComfyUI...")
     run("python3 main.py --listen 0.0.0.0 --port 8188")
