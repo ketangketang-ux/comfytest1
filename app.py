@@ -43,8 +43,7 @@ image = (
         # Install ComfyUI to default location
         "comfy --skip-prompt install --nvidia"
     ])
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
-)
+    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"}))
     .env({"CIVITAI_API_KEY": modal.Secret.from_name("civitai-token")})
 
 # Install nodes to default ComfyUI location during build
