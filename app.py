@@ -11,10 +11,11 @@ DATA_BASE = os.path.join(DATA_ROOT, "ComfyUI")
 CUSTOM_NODES_DIR = os.path.join(DATA_BASE, "custom_nodes")
 MODELS_DIR = os.path.join(DATA_BASE, "models")
 TMP_DL = "/tmp/download"
-
 DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
 
-def git_clone_cmd(node_repo: str, recursive: bool = False, install_reqs: bool = False) -> str:
+
+# Helpers
+def git_clone_cmd(node_repo: str, recursive: bool = False, install_reqs: bool = False):
     name = node_repo.split("/")[-1]
     dest = os.path.join(DEFAULT_COMFY_DIR, "custom_nodes", name)
     cmd = f"git clone https://github.com/{node_repo} {dest}"
@@ -23,6 +24,7 @@ def git_clone_cmd(node_repo: str, recursive: bool = False, install_reqs: bool = 
     if install_reqs:
         cmd += f" && pip install -r {dest}/requirements.txt"
     return cmd
+
 
 def hf_download(subdir: str, filename: str, repo_id: str, subfolder: Optional[str] = None):
     out = hf_hub_download(
@@ -35,9 +37,10 @@ def hf_download(subdir: str, filename: str, repo_id: str, subfolder: Optional[st
     os.makedirs(target, exist_ok=True)
     shutil.move(out, os.path.join(target, filename))
 
-# ===========================================
+
+# =====================================================================
 # BUILD IMAGE (FIXED)
-# ===========================================
+# =====================================================================
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -48,13 +51,13 @@ image = (
         "uv pip install --system --compile-bytecode huggingface_hub[hf_transfer]==0.28.1",
         "comfy --skip-prompt install --nvidia"
     ])
-    .env({
+    .env({  # only STRINGS allowed here
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
-        "CIVITAI_API_KEY": modal.Secret.from_name("civitai-token")
     })
 )
 
-# Install nodes
+
+# Built-in comfy nodes install (fixed)
 image = image.run_commands([
     "comfy node install "
     "rgthree-comfy "
@@ -70,7 +73,8 @@ image = image.run_commands([
     "comfyui-manager-civitai-extension"
 ])
 
-# Git nodes
+
+# Git-based nodes
 for repo, flags in [
     ("ssitu/ComfyUI_UltimateSDUpscale", {'recursive': True}),
     ("welltop-cn/ComfyUI-TeaCache", {'install_reqs': True}),
@@ -80,7 +84,8 @@ for repo, flags in [
 ]:
     image = image.run_commands([git_clone_cmd(repo, **flags)])
 
-# Models downloaded at runtime
+
+# Runtime model downloads
 model_tasks = [
     ("unet/FLUX", "flux1-dev-Q8_0.gguf", "city96/FLUX.1-dev-gguf", None),
     ("clip/FLUX", "t5-v1_1-xxl-encoder-Q8_0.gguf", "city96/t5-v1_1-xxl-encoder-gguf", None),
@@ -94,9 +99,18 @@ extra_cmds = [
     f"wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth -P {MODELS_DIR}/upscale_models",
 ]
 
-# App
+
+# =====================================================================
+# APP
+# =====================================================================
+
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
-app = modal.App(name="comfyui", image=image)
+
+app = modal.App(
+    name="comfyui",
+    image=image
+)
+
 
 @app.function(
     max_containers=1,
@@ -104,11 +118,97 @@ app = modal.App(name="comfyui", image=image)
     timeout=1800,
     gpu=os.environ.get("MODAL_GPU_TYPE", "A100-40GB"),
     volumes={DATA_ROOT: vol},
+
+    # 🔥 Place SECRET here (CORRECT)
+    secrets=[modal.Secret.from_name("civitai-token")]
 )
 @modal.concurrent(max_inputs=10)
 @modal.web_server(8000, startup_timeout=300)
 def ui():
 
-    # === The rest of your function stays the same ===
-    # (Tidak perlu diubah)
-    ...
+    # first-time install
+    if not os.path.exists(os.path.join(DATA_BASE, "main.py")):
+        print("First run detected. Copying ComfyUI to volume...")
+
+        os.makedirs(DATA_ROOT, exist_ok=True)
+
+        if os.path.exists(DEFAULT_COMFY_DIR):
+            subprocess.run(f"cp -r {DEFAULT_COMFY_DIR} {DATA_ROOT}/", shell=True, check=True)
+        else:
+            os.makedirs(DATA_BASE, exist_ok=True)
+
+    # Fix & update backend
+    print("Updating ComfyUI backend...")
+    os.chdir(DATA_BASE)
+
+    try:
+        result = subprocess.run("git symbolic-ref HEAD", shell=True, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            subprocess.run("git checkout -B main origin/main", shell=True, check=True)
+
+        subprocess.run("git config pull.ff only", shell=True, check=True)
+        subprocess.run("git pull --ff-only", shell=True, check=True)
+    except Exception as e:
+        print("Backend update error:", e)
+
+    # Update ComfyUI-Manager
+    manager_dir = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-Manager")
+    if os.path.exists(manager_dir):
+        try:
+            os.chdir(manager_dir)
+            subprocess.run("git config pull.ff only", shell=True, check=True)
+            subprocess.run("git pull --ff-only", shell=True, check=True)
+        except Exception as e:
+            print("Manager update error:", e)
+    else:
+        subprocess.run("comfy node install ComfyUI-Manager", shell=True)
+
+    # pip upgrade
+    subprocess.run("pip install --no-cache-dir --upgrade pip", shell=True)
+
+    # comfy-cli upgrade
+    subprocess.run("pip install --no-cache-dir --upgrade comfy-cli", shell=True)
+
+    # Frontend update
+    req = os.path.join(DATA_BASE, "requirements.txt")
+    if os.path.exists(req):
+        subprocess.run(f"/usr/local/bin/python -m pip install -r {req}", shell=True)
+
+    # Manager config
+    cfg_dir = os.path.join(DATA_BASE, "user", "default", "ComfyUI-Manager")
+    os.makedirs(cfg_dir, exist_ok=True)
+    with open(os.path.join(cfg_dir, "config.ini"), "w") as f:
+        f.write("[default]\nnetwork_mode = private\nsecurity_level = weak\nlog_to_file = false\n")
+
+    # Make dirs
+    for d in [CUSTOM_NODES_DIR, MODELS_DIR, TMP_DL]:
+        os.makedirs(d, exist_ok=True)
+
+    # Download missing models
+    for sub, fn, repo, subf in model_tasks:
+        target = os.path.join(MODELS_DIR, sub, fn)
+        if not os.path.exists(target):
+            try:
+                hf_download(sub, fn, repo, subf)
+            except Exception as e:
+                print("Model download failed:", e)
+
+    # Extra downloads
+    for cmd in extra_cmds:
+        subprocess.run(cmd, shell=True)
+
+    # Start ComfyUI
+    os.environ["COMFY_DIR"] = DATA_BASE
+
+    print("Launching ComfyUI...")
+    subprocess.Popen(
+        [
+            "comfy", "launch", "--",
+            "--listen", "0.0.0.0",
+            "--port", "8000",
+            "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"
+        ],
+        cwd=DATA_BASE,
+        env=os.environ.copy()
+    )
