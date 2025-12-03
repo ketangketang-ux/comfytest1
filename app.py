@@ -97,13 +97,13 @@ app = modal.App(name="comfyui-reworked", image=image)
     cpu=2,
     memory=8192,
     gpu=os.environ.get("MODAL_GPU_TYPE", None),
-    secrets=[modal.Secret.from_name("hf-token"), modal.Secret.from_name("civitai-token")]
+    secrets=[modal.Secret.from_name("huggingface-secret"), modal.Secret.from_name("civitai-token")]
 )
 @modal.web_server(port=8000, startup_timeout=300)
 def ui():
     import os
     import subprocess
-    hf_token = os.environ.get("hf-token", "")
+    hf_token = os.environ.get("huggingface-secret", "")
     print("[ui] hf_token present?:", bool(hf_token))
 
     # Ensure dirs
