@@ -116,7 +116,7 @@ app = modal.App(
     max_containers=1,
     scaledown_window=600,
     timeout=1800,
-    gpu=os.environ.get("MODAL_GPU_TYPE", "A100-40GB"),
+    gpu=os.environ.get("MODAL_GPU_TYPE", "L4-24GB"),
     volumes={DATA_ROOT: vol},
 
     # 🔥 Place SECRET here (CORRECT)
