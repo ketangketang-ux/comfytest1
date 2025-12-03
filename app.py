@@ -1,3 +1,4 @@
+# modal_comfyui_rework.py
 import os
 import shutil
 import subprocess
@@ -5,210 +6,189 @@ from typing import Optional
 from huggingface_hub import hf_hub_download
 import modal
 
-# Paths
+# ---------------------------
+# Config (ubah sesuai kebutuhan)
+# ---------------------------
 DATA_ROOT = "/data/comfy"
 DATA_BASE = os.path.join(DATA_ROOT, "ComfyUI")
 CUSTOM_NODES_DIR = os.path.join(DATA_BASE, "custom_nodes")
 MODELS_DIR = os.path.join(DATA_BASE, "models")
 TMP_DL = "/tmp/download"
-DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
+DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"  # kalau lu punya fallback local copy
 
+# Repos yang script akan fallback-clone jika Manager install gagal
+FALLBACK_NODE_REPOS = [
+    "cubiq/ComfyUI_IPAdapter_plus",
+    "rgthree/rgthree-comfy",
+    "comfyanonymous/comfyui-impact-pack",
+    "nkchocoai/ComfyUI-SaveImageWithMetaData",
+    "receyuki/comfyui-prompt-reader-node",
+]
 
-# Helpers
-def git_clone_cmd(node_repo: str, recursive: bool = False, install_reqs: bool = False):
-    name = node_repo.split("/")[-1]
-    dest = os.path.join(DEFAULT_COMFY_DIR, "custom_nodes", name)
-    cmd = f"git clone https://github.com/{node_repo} {dest}"
-    if recursive:
-        cmd += " --recursive"
-    if install_reqs:
-        cmd += f" && pip install -r {dest}/requirements.txt"
-    return cmd
-
-
-def hf_download(subdir: str, filename: str, repo_id: str, subfolder: Optional[str] = None):
-    out = hf_hub_download(
-        repo_id=repo_id,
-        filename=filename,
-        subfolder=subfolder,
-        local_dir=TMP_DL
-    )
-    target = os.path.join(MODELS_DIR, subdir)
-    os.makedirs(target, exist_ok=True)
-    shutil.move(out, os.path.join(target, filename))
-
-
-# =====================================================================
-# BUILD IMAGE (FIXED)
-# =====================================================================
-
-image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .apt_install("git", "wget", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
-    .run_commands([
-        "pip install --upgrade pip",
-        "pip install --no-cache-dir comfy-cli uv",
-        "uv pip install --system --compile-bytecode huggingface_hub[hf_transfer]==0.28.1",
-        "comfy --skip-prompt install --nvidia"
-    ])
-    .env({  # only STRINGS allowed here
-        "HF_HUB_ENABLE_HF_TRANSFER": "1",
-    })
-)
-
-
-# Built-in comfy nodes install (fixed)
-image = image.run_commands([
-    "comfy node install "
-    "rgthree-comfy "
-    "comfyui-impact-pack "
-    "comfyui-impact-subpack "
-    "ComfyUI-YOLO "
-    "comfyui-inspire-pack "
-    "comfyui_ipadapter_plus "
-    "wlsh_nodes "
-    "ComfyUI_Comfyroll_CustomNodes "
-    "comfyui_essentials "
-    "ComfyUI-GGUF "
-    "comfyui-manager-civitai-extension"
-])
-
-
-# Git-based nodes
-for repo, flags in [
-    ("ssitu/ComfyUI_UltimateSDUpscale", {'recursive': True}),
-    ("welltop-cn/ComfyUI-TeaCache", {'install_reqs': True}),
-    ("nkchocoai/ComfyUI-SaveImageWithMetaData", {}),
-    ("receyuki/comfyui-prompt-reader-node", {'recursive': True, 'install_reqs': True}),
-    ("crystian/ComfyUI-Crystools", {'install_reqs': True}),
-]:
-    image = image.run_commands([git_clone_cmd(repo, **flags)])
-
-
-# Runtime model downloads
-model_tasks = [
+# Model tasks (huggingface repo_id, filename, subdir)
+MODEL_TASKS = [
+    ("checkpoints", "flux1-dev-fp8-all-in-one.safetensors", "camenduru/FLUX.1-dev", None),
     ("unet/FLUX", "flux1-dev-Q8_0.gguf", "city96/FLUX.1-dev-gguf", None),
     ("clip/FLUX", "t5-v1_1-xxl-encoder-Q8_0.gguf", "city96/t5-v1_1-xxl-encoder-gguf", None),
     ("clip/FLUX", "clip_l.safetensors", "comfyanonymous/flux_text_encoders", None),
-    ("checkpoints", "flux1-dev-fp8-all-in-one.safetensors", "camenduru/FLUX.1-dev", None),
     ("loras", "mjV6.safetensors", "strangerzonehf/Flux-Midjourney-Mix2-LoRA", None),
     ("vae/FLUX", "ae.safetensors", "ffxvs/vae-flux", None),
 ]
 
-extra_cmds = [
-    f"wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth -P {MODELS_DIR}/upscale_models",
+EXTRA_CMDS = [
+    # contoh: download extra weights
+    # f"wget -q -O {MODELS_DIR}/upscale_models/RealESRGAN_x4plus_anime_6B.pth https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth"
 ]
 
+# ---------------------------
+# Helpers
+# ---------------------------
+def git_clone_to_custom(repo: str):
+    name = repo.split("/")[-1]
+    dest = os.path.join(CUSTOM_NODES_DIR, name)
+    if os.path.exists(dest):
+        print(f"[git_clone] already exists: {dest}")
+        return
+    cmd = f"git clone https://github.com/{repo} {dest}"
+    print("[git_clone] running:", cmd)
+    subprocess.run(cmd, shell=True, check=False)
 
-# =====================================================================
-# APP
-# =====================================================================
+def hf_download(subdir: str, filename: str, repo_id: str, subfolder: Optional[str], hf_token: str):
+    os.makedirs(TMP_DL, exist_ok=True)
+    print(f"[hf_download] repo={repo_id} filename={filename}")
+    try:
+        out = hf_hub_download(repo_id=repo_id, filename=filename, subfolder=subfolder, local_dir=TMP_DL, token=hf_token)
+        target = os.path.join(MODELS_DIR, subdir)
+        os.makedirs(target, exist_ok=True)
+        shutil.move(out, os.path.join(target, filename))
+        print("[hf_download] moved to:", os.path.join(target, filename))
+    except Exception as e:
+        print("[hf_download] failed:", e)
+        raise
 
+# ---------------------------
+# Modal image + volume + app
+# ---------------------------
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 
-app = modal.App(
-    name="comfyui",
-    image=image
+image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .apt_install("git", "wget", "unzip", "git-lfs", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
+    .run_commands([
+        # pip + core libs
+        "python -m pip install --upgrade pip",
+        # comfy-cli helps installing comfy components
+        "python -m pip install --no-cache-dir comfy-cli huggingface_hub==0.28.1",
+        # insightface + runtime for ONNX (CPU fallback; if you have GPU choose onnxruntime-gpu)
+        "python -m pip install --no-cache-dir insightface onnxruntime onnx numpy",
+        # common extras many nodes need
+        "python -m pip install --no-cache-dir pillow scipy safetensors",
+    ])
+    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
+app = modal.App(name="comfyui-reworked", image=image)
 
+# put secrets names that must exist in your Modal project: hf-token, civitai-token (optional)
 @app.function(
-    max_containers=1,
-    scaledown_window=600,
-    timeout=1800,
-    gpu=os.environ.get("MODAL_GPU_TYPE", "L4-24GB"),
+    image=image,
     volumes={DATA_ROOT: vol},
-
-    # 🔥 Place SECRET here (CORRECT)
-    secrets=[modal.Secret.from_name("civitai-token")]
+    timeout=3600,
+    cpu=2,
+    memory=8192,
+    gpu=os.environ.get("MODAL_GPU_TYPE", None),
+    secrets=[modal.Secret.from_name("hf-token"), modal.Secret.from_name("civitai-token")]
 )
-@modal.concurrent(max_inputs=10)
-@modal.web_server(8000, startup_timeout=300)
+@modal.web_server(port=8000, startup_timeout=300)
 def ui():
+    import os
+    import subprocess
+    hf_token = os.environ.get("hf-token", "")
+    print("[ui] hf_token present?:", bool(hf_token))
 
-    # first-time install
-    if not os.path.exists(os.path.join(DATA_BASE, "main.py")):
-        print("First run detected. Copying ComfyUI to volume...")
-
-        os.makedirs(DATA_ROOT, exist_ok=True)
-
-        if os.path.exists(DEFAULT_COMFY_DIR):
-            subprocess.run(f"cp -r {DEFAULT_COMFY_DIR} {DATA_ROOT}/", shell=True, check=True)
-        else:
-            os.makedirs(DATA_BASE, exist_ok=True)
-
-    # Fix & update backend
-    print("Updating ComfyUI backend...")
-    os.chdir(DATA_BASE)
-
-    try:
-        result = subprocess.run("git symbolic-ref HEAD", shell=True, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            subprocess.run("git checkout -B main origin/main", shell=True, check=True)
-
-        subprocess.run("git config pull.ff only", shell=True, check=True)
-        subprocess.run("git pull --ff-only", shell=True, check=True)
-    except Exception as e:
-        print("Backend update error:", e)
-
-    # Update ComfyUI-Manager
-    manager_dir = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-Manager")
-    if os.path.exists(manager_dir):
-        try:
-            os.chdir(manager_dir)
-            subprocess.run("git config pull.ff only", shell=True, check=True)
-            subprocess.run("git pull --ff-only", shell=True, check=True)
-        except Exception as e:
-            print("Manager update error:", e)
-    else:
-        subprocess.run("comfy node install ComfyUI-Manager", shell=True)
-
-    # pip upgrade
-    subprocess.run("pip install --no-cache-dir --upgrade pip", shell=True)
-
-    # comfy-cli upgrade
-    subprocess.run("pip install --no-cache-dir --upgrade comfy-cli", shell=True)
-
-    # Frontend update
-    req = os.path.join(DATA_BASE, "requirements.txt")
-    if os.path.exists(req):
-        subprocess.run(f"/usr/local/bin/python -m pip install -r {req}", shell=True)
-
-    # Manager config
-    cfg_dir = os.path.join(DATA_BASE, "user", "default", "ComfyUI-Manager")
-    os.makedirs(cfg_dir, exist_ok=True)
-    with open(os.path.join(cfg_dir, "config.ini"), "w") as f:
-        f.write("[default]\nnetwork_mode = private\nsecurity_level = weak\nlog_to_file = false\n")
-
-    # Make dirs
-    for d in [CUSTOM_NODES_DIR, MODELS_DIR, TMP_DL]:
+    # Ensure dirs
+    for d in [DATA_ROOT, DATA_BASE, CUSTOM_NODES_DIR, MODELS_DIR, TMP_DL]:
         os.makedirs(d, exist_ok=True)
 
-    # Download missing models
-    for sub, fn, repo, subf in model_tasks:
-        target = os.path.join(MODELS_DIR, sub, fn)
-        if not os.path.exists(target):
+    # If we have a local fallback comfy, copy once (optional)
+    if os.path.exists(DEFAULT_COMFY_DIR) and not os.path.exists(os.path.join(DATA_BASE, "main.py")):
+        print("[ui] copying fallback ComfyUI to volume")
+        subprocess.run(f"cp -r {DEFAULT_COMFY_DIR} {DATA_ROOT}/", shell=True, check=False)
+
+    # Update repo if it's a git repo (best-effort)
+    try:
+        if os.path.exists(os.path.join(DATA_BASE, ".git")):
+            print("[ui] updating comfy repo (ff-only)")
+            subprocess.run("git -C {} config pull.ff only".format(DATA_BASE), shell=True, check=False)
+            subprocess.run("git -C {} pull --ff-only".format(DATA_BASE), shell=True, check=False)
+    except Exception as e:
+        print("[ui] git pull failed:", e)
+
+    # Ensure comfy manager config weak (helps when manager is allowed)
+    cfg_dir = os.path.join(DATA_BASE, "user", "default", "ComfyUI-Manager")
+    os.makedirs(cfg_dir, exist_ok=True)
+    cfg_path = os.path.join(cfg_dir, "config.ini")
+    with open(cfg_path, "w") as f:
+        f.write("[default]\nnetwork_mode = private\nsecurity_level = weak\nlog_to_file = false\n")
+    print("[ui] wrote manager config:", cfg_path)
+
+    # Try use comfy node install for common packages (manager-like)
+    base_cmd = "comfy node install --yes"
+    node_pkgs = [
+        "rgthree-comfy",
+        "comfyui-impact-pack",
+        "comfyui-impact-subpack",
+        "comfyui-ipadapter-plus",
+        "ComfyUI_Comfyroll_CustomNodes",
+        "comfyui-manager-civitai-extension",
+    ]
+    for pkg in node_pkgs:
+        try:
+            print("[ui] comfy node install", pkg)
+            subprocess.run(f"{base_cmd} {pkg}", shell=True, check=False)
+        except Exception as e:
+            print("[ui] comfy node install failed for", pkg, e)
+
+    # Fallback: if some nodes not present, clone repos directly to custom_nodes
+    print("[ui] ensuring fallback custom nodes...")
+    for repo in FALLBACK_NODE_REPOS:
+        # check presence by folder name
+        name = repo.split("/")[-1]
+        dest = os.path.join(CUSTOM_NODES_DIR, name)
+        if not os.path.exists(dest):
             try:
-                hf_download(sub, fn, repo, subf)
+                print("[ui] fallback clone:", repo)
+                git_clone_to_custom(repo)
             except Exception as e:
-                print("Model download failed:", e)
+                print("[ui] clone failed:", e)
 
-    # Extra downloads
-    for cmd in extra_cmds:
-        subprocess.run(cmd, shell=True)
+    # Download models using HF token if missing (best-effort)
+    print("[ui] downloading model tasks if missing...")
+    for sub, fn, repo, subf in MODEL_TASKS:
+        try:
+            target = os.path.join(MODELS_DIR, sub, fn)
+            if not os.path.exists(target):
+                print("[ui] hf_download", repo, fn)
+                hf_download(sub, fn, repo, subf, hf_token)
+        except Exception as e:
+            print("[ui] hf download failed for", fn, e)
 
-    # Start ComfyUI
+    # Extra commands (wget etc)
+    for cmd in EXTRA_CMDS:
+        try:
+            print("[ui] running extra cmd:", cmd)
+            subprocess.run(cmd, shell=True, check=False)
+        except Exception as e:
+            print("[ui] extra cmd failed:", e)
+
+    # Start ComfyUI (use comfy CLI)
     os.environ["COMFY_DIR"] = DATA_BASE
-
-    print("Launching ComfyUI...")
+    print("[ui] launching comfy (cwd):", DATA_BASE)
     subprocess.Popen(
-        [
-            "comfy", "launch", "--",
-            "--listen", "0.0.0.0",
-            "--port", "8000",
-            "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"
-        ],
+        ["comfy", "launch", "--", "--listen", "0.0.0.0", "--port", "8000"],
         cwd=DATA_BASE,
         env=os.environ.copy()
     )
+    return "ComfyUI starting..."
+
+# End of script
