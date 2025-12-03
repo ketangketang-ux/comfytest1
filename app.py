@@ -104,7 +104,7 @@ def ui():
     import os
     import subprocess
     hf_token = os.environ.get("huggingface-secret", "")
-    print("[ui] hf_token present?:", bool(hf_token))
+    print("[ui] huggingface-secret present?:", bool(huggingface-secret))
 
     # Ensure dirs
     for d in [DATA_ROOT, DATA_BASE, CUSTOM_NODES_DIR, MODELS_DIR, TMP_DL]:
