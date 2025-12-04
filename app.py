@@ -41,9 +41,8 @@ def hf_download(subdir: str, filename: str, repo_id: str, subfolder: Optional[st
     os.makedirs(target, exist_ok=True)
     shutil.move(out, os.path.join(target, filename))
 
-
 # =====================================================================
-# BUILD IMAGE (minimal, avoid installing InsightFace here)
+# BUILD IMAGE (minimal, avoid InsightFace here)
 # =====================================================================
 
 image = (
@@ -58,7 +57,7 @@ image = (
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
-# Built-in Comfy nodes (install what the build can safely do)
+# Built-in Comfy nodes (install what build can safely do)
 image = image.run_commands([
     "comfy node install "
     "rgthree-comfy "
@@ -83,7 +82,6 @@ for repo, flags in [
     ("crystian/ComfyUI-Crystools", {'install_reqs': True}),
 ]:
     image = image.run_commands([git_clone_cmd(repo, **flags)])
-
 
 # =====================================================================
 # Runtime model tasks (HuggingFace)
@@ -110,7 +108,6 @@ model_tasks += [
 extra_cmds = [
     f"wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth -P {MODELS_DIR}/upscale_models",
 ]
-
 
 # =====================================================================
 # APP
@@ -141,6 +138,15 @@ def ui():
             subprocess.run(f"cp -r {DEFAULT_COMFY_DIR} {DATA_ROOT}/", shell=True)
         else:
             os.makedirs(DATA_BASE, exist_ok=True)
+
+    # ---------------------------------------------------------
+    # FORCE numpy reinstall (fix numpy.rec missing in numpy 2.x)
+    # ---------------------------------------------------------
+    try:
+        print("Ensuring compatible numpy (1.26.4) is installed...")
+        subprocess.run("pip install --no-cache-dir --force-reinstall numpy==1.26.4", shell=True, check=False)
+    except Exception as e:
+        print("Numpy install error (ignored):", e)
 
     # ---------------------------------------------------------
     # SAFE GIT SYNC (handles missing .git / origin/main issues)
@@ -238,6 +244,49 @@ def ui():
     print("Manager patches done.")
 
     # ---------------------------------------------------------
+    # Disable SciPy imports across ComfyUI & custom nodes (prevents SciPy import crashes)
+    # ---------------------------------------------------------
+    try:
+        print("Disabling SciPy imports in codebase to avoid SciPy-related import errors...")
+        for root, dirs, files in os.walk(DATA_BASE):
+            for file in files:
+                if not file.endswith(".py"):
+                    continue
+                full = os.path.join(root, file)
+                try:
+                    subprocess.run(
+                        f"sed -i \"s/^\\s*import scipy/# import scipy (disabled)/g\" \"{full}\"",
+                        shell=True, check=False
+                    )
+                    subprocess.run(
+                        f"sed -i \"s/^\\s*from scipy/# from scipy (disabled)/g\" \"{full}\"",
+                        shell=True, check=False
+                    )
+                except Exception as e:
+                    pass
+        # Also disable in custom nodes if present
+        if os.path.exists(CUSTOM_NODES_DIR):
+            for root, dirs, files in os.walk(CUSTOM_NODES_DIR):
+                for file in files:
+                    if not file.endswith(".py"):
+                        continue
+                    full = os.path.join(root, file)
+                    try:
+                        subprocess.run(
+                            f"sed -i \"s/^\\s*import scipy/# import scipy (disabled)/g\" \"{full}\"",
+                            shell=True, check=False
+                        )
+                        subprocess.run(
+                            f"sed -i \"s/^\\s*from scipy/# from scipy (disabled)/g\" \"{full}\"",
+                            shell=True, check=False
+                        )
+                    except Exception:
+                        pass
+        print("SciPy imports disabled (best-effort).")
+    except Exception as e:
+        print("Error while disabling SciPy imports:", e)
+
+    # ---------------------------------------------------------
     # Ensure model dirs exist and download models
     # ---------------------------------------------------------
     os.makedirs(os.path.join(MODELS_DIR, "insightface"), exist_ok=True)
@@ -250,7 +299,7 @@ def ui():
             except Exception as e:
                 print("Model download failed:", e)
 
-    # Extra downloads (safe)
+    # Extra wget models
     for cmd in extra_cmds:
         try:
             subprocess.run(cmd, shell=True, check=False)
@@ -268,7 +317,8 @@ def ui():
             "--port", "8000",
             "--front-end-version", "Comfy-Org/ComfyUI_frontend@latest"
         ],
-        cwd=DATA_BASE
+        cwd=DATA_BASE,
+        env=os.environ.copy()
     )
 
     # ---------------------------------------------------------
@@ -291,9 +341,9 @@ def ui():
         else:
             print("InsightFace node already present.")
 
-        # Install *minimal* safe dependencies (CPU ONNX runtime + headless OpenCV)
+        # Install minimal safe dependencies (CPU ONNX runtime + headless OpenCV + compatible numpy)
         try:
-            print("Installing minimal InsightFace dependencies (onnxruntime CPU, opencv-headless, scikit-image, numpy)...")
+            print("Installing minimal InsightFace dependencies (onnxruntime CPU, opencv-headless, scikit-image, numpy==1.26.4)...")
             subprocess.run(
                 "pip install --no-cache-dir onnxruntime opencv-python-headless scikit-image numpy==1.26.4",
                 shell=True, check=False
@@ -323,13 +373,10 @@ def ui():
                             )
 
                             # If onnxruntime used, prefer CPUExecutionProvider
-                            # Replace common InferenceSession instantiation patterns
                             subprocess.run(
                                 f"sed -i \"s/InferenceSession(\\([^)]*\\))/InferenceSession(\\1, providers=['CPUExecutionProvider'])/g\" \"{full}\"",
                                 shell=True, check=False
                             )
-
-                            # Replace providers=None -> providers=['CPUExecutionProvider']
                             subprocess.run(
                                 f"sed -i \"s/providers\\s*=\\s*None/providers=['CPUExecutionProvider']/g\" \"{full}\"",
                                 shell=True, check=False
@@ -354,4 +401,3 @@ def ui():
     threading.Thread(target=install_insightface_postboot, daemon=True).start()
 
     print("Startup complete. Background tasks launched (InsightFace install + Manager patches).")
-
