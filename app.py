@@ -7,7 +7,9 @@ import modal
 import threading
 import time
 
+# ------------------------
 # Paths
+# ------------------------
 DATA_ROOT = "/data/comfy"
 DATA_BASE = os.path.join(DATA_ROOT, "ComfyUI")
 CUSTOM_NODES_DIR = os.path.join(DATA_BASE, "custom_nodes")
@@ -15,7 +17,9 @@ MODELS_DIR = os.path.join(DATA_BASE, "models")
 TMP_DL = "/tmp/download"
 DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
 
+# ------------------------
 # Helpers
+# ------------------------
 def git_clone_cmd(node_repo: str, recursive: bool = False, install_reqs: bool = False):
     name = node_repo.split("/")[-1]
     dest = os.path.join(DEFAULT_COMFY_DIR, "custom_nodes", name)
@@ -39,7 +43,7 @@ def hf_download(subdir: str, filename: str, repo_id: str, subfolder: Optional[st
 
 
 # =====================================================================
-# BUILD IMAGE
+# BUILD IMAGE (minimal, avoid installing InsightFace here)
 # =====================================================================
 
 image = (
@@ -54,7 +58,7 @@ image = (
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
-# Built-in Comfy nodes
+# Built-in Comfy nodes (install what the build can safely do)
 image = image.run_commands([
     "comfy node install "
     "rgthree-comfy "
@@ -70,7 +74,7 @@ image = image.run_commands([
     "comfyui-manager-civitai-extension"
 ])
 
-# Git-based nodes
+# Git-based nodes (installed in build where allowed)
 for repo, flags in [
     ("ssitu/ComfyUI_UltimateSDUpscale", {'recursive': True}),
     ("welltop-cn/ComfyUI-TeaCache", {'install_reqs': True}),
@@ -81,7 +85,10 @@ for repo, flags in [
     image = image.run_commands([git_clone_cmd(repo, **flags)])
 
 
-# Runtime model downloads
+# =====================================================================
+# Runtime model tasks (HuggingFace)
+# =====================================================================
+
 model_tasks = [
     ("unet/FLUX", "flux1-dev-Q8_0.gguf", "city96/FLUX.1-dev-gguf", None),
     ("clip/FLUX", "t5-v1_1-xxl-encoder-Q8_0.gguf", "city96/t5-v1_1-xxl-encoder-gguf", None),
@@ -91,7 +98,7 @@ model_tasks = [
     ("vae/FLUX", "ae.safetensors", "ffxvs/vae-flux", None),
 ]
 
-# InsightFace ONNX models
+# InsightFace ONNX models (download via HF)
 model_tasks += [
     ("insightface", "det_10g.onnx", "ltdrdata/insightface_models", "antelopev2"),
     ("insightface", "2d106det.onnx", "ltdrdata/insightface_models", "antelopev2"),
@@ -103,6 +110,7 @@ model_tasks += [
 extra_cmds = [
     f"wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth -P {MODELS_DIR}/upscale_models",
 ]
+
 
 # =====================================================================
 # APP
@@ -124,35 +132,33 @@ app = modal.App(name="comfyui", image=image)
 def ui():
 
     # ---------------------------------------------------------
-    # FIRST INSTALL: COPY DEFAULT COMFYUI INTO THE VOLUME
+    # FIRST RUN: copy default ComfyUI into the persistent volume
     # ---------------------------------------------------------
     if not os.path.exists(os.path.join(DATA_BASE, "main.py")):
         print("First run: copying ComfyUI to volume...")
         os.makedirs(DATA_ROOT, exist_ok=True)
-
         if os.path.exists(DEFAULT_COMFY_DIR):
             subprocess.run(f"cp -r {DEFAULT_COMFY_DIR} {DATA_ROOT}/", shell=True)
         else:
             os.makedirs(DATA_BASE, exist_ok=True)
 
     # ---------------------------------------------------------
-    # SAFE GIT FIX FOR BROKEN VOLUME (NO origin/main ERRORS)
+    # SAFE GIT SYNC (handles missing .git / origin/main issues)
     # ---------------------------------------------------------
     print("Updating ComfyUI backend safely...")
     os.chdir(DATA_BASE)
 
-    if not os.path.exists(".git"):
-        print("No .git found → Reinitializing repo.")
+    if not os.path.exists(os.path.join(DATA_BASE, ".git")):
+        print("No .git found → initializing git and adding origin...")
         subprocess.run("git init", shell=True)
         subprocess.run("git remote add origin https://github.com/comfyanonymous/ComfyUI.git", shell=True)
 
-    subprocess.run("git fetch origin", shell=True)
+    subprocess.run("git fetch origin --tags --prune", shell=True)
 
     branch_check = subprocess.run(
         "git ls-remote --heads origin main",
         shell=True, capture_output=True, text=True
     )
-
     branch = "main" if branch_check.stdout.strip() else "master"
     print(f"Using branch: {branch}")
 
@@ -160,28 +166,27 @@ def ui():
     subprocess.run(f"git pull origin {branch}", shell=True)
 
     # ---------------------------------------------------------
-    # UPDATE MANAGER
+    # Manager update / install
     # ---------------------------------------------------------
     manager_dir = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-Manager")
-
     if os.path.exists(manager_dir):
         try:
             os.chdir(manager_dir)
-            subprocess.run("git fetch origin", shell=True)
-            subprocess.run("git pull", shell=True)
-        except:
-            print("Manager update failed.")
+            subprocess.run("git fetch origin", shell=True, check=False)
+            subprocess.run("git pull", shell=True, check=False)
+        except Exception as e:
+            print("Manager update error:", e)
     else:
-        subprocess.run("comfy node install ComfyUI-Manager", shell=True)
+        subprocess.run("comfy node install ComfyUI-Manager", shell=True, check=False)
 
     # ---------------------------------------------------------
-    # UPGRADE pip + comfy-cli
+    # pip + comfy-cli upgrade
     # ---------------------------------------------------------
-    subprocess.run("pip install --no-cache-dir --upgrade pip", shell=True)
-    subprocess.run("pip install --no-cache-dir --upgrade comfy-cli", shell=True)
+    subprocess.run("pip install --no-cache-dir --upgrade pip", shell=True, check=False)
+    subprocess.run("pip install --no-cache-dir --upgrade comfy-cli", shell=True, check=False)
 
     # ---------------------------------------------------------
-    # Manager USER-LEVEL config
+    # Manager user config (UI-level)
     # ---------------------------------------------------------
     cfg_dir = os.path.join(DATA_BASE, "user", "default", "ComfyUI-Manager")
     os.makedirs(cfg_dir, exist_ok=True)
@@ -196,7 +201,7 @@ def ui():
         )
 
     # ---------------------------------------------------------
-    # BRUTE-FORCE PATCH MANAGER SECURITY (APPLIES TO ALL VERSIONS)
+    # BRUTE-FORCE Manager patch (applies to many versions)
     # ---------------------------------------------------------
     print("Applying Manager brute-force patches...")
     if os.path.exists(manager_dir):
@@ -205,52 +210,57 @@ def ui():
                 if not file.endswith(".py"):
                     continue
                 full = os.path.join(root, file)
+                try:
+                    # Force security_level = 'weak'
+                    subprocess.run(
+                        f"sed -i \"s/security_level *= *['\\\"]*[a-zA-Z0-9_]*['\\\"]/security_level = 'weak'/g\" \"{full}\"",
+                        shell=True, check=False
+                    )
+                    # Replace 'strict' -> 'weak'
+                    subprocess.run(
+                        f"sed -i \"s/'strict'/'weak'/g\" \"{full}\"",
+                        shell=True, check=False
+                    )
+                    # Disable signature checks (multiple patterns)
+                    subprocess.run(
+                        f"sed -i \"s/verify_signature\\s*(/False and verify_signature(/g\" \"{full}\"",
+                        shell=True, check=False
+                    )
+                    subprocess.run(
+                        f"sed -i \"s/if not verify_signature/if False and verify_signature/g\" \"{full}\"",
+                        shell=True, check=False
+                    )
+                except Exception as e:
+                    print("Patch error for", full, e)
+    else:
+        print("Manager directory not present; skipping brute-force patch.")
 
-                # Force security_level = weak
-                subprocess.run(
-                    f"sed -i \"s/security_level *= *['\\\"]*[a-zA-Z0-9_]*['\\\"]/security_level = 'weak'/g\" \"{full}\"",
-                    shell=True
-                )
-
-                # Replace 'strict' → 'weak'
-                subprocess.run(
-                    f"sed -i \"s/'strict'/'weak'/g\" \"{full}\"",
-                    shell=True
-                )
-
-                # Disable signature checks
-                subprocess.run(
-                    f"sed -i \"s/verify_signature(/False and verify_signature(/g\" \"{full}\"",
-                    shell=True
-                )
-
-                subprocess.run(
-                    f"sed -i \"s/if not verify_signature/if False and verify_signature/g\" \"{full}\"",
-                    shell=True
-                )
-
-    print("Manager patches applied.")
+    print("Manager patches done.")
 
     # ---------------------------------------------------------
-    # DOWNLOAD ALL MODELS (HF)
+    # Ensure model dirs exist and download models
     # ---------------------------------------------------------
     os.makedirs(os.path.join(MODELS_DIR, "insightface"), exist_ok=True)
     for sub, fn, repo, subf in model_tasks:
         dst = os.path.join(MODELS_DIR, sub, fn)
         if not os.path.exists(dst):
             try:
+                print(f"Downloading model {fn} into {sub} ...")
                 hf_download(sub, fn, repo, subf)
             except Exception as e:
                 print("Model download failed:", e)
 
-    # Extra wget models
+    # Extra downloads (safe)
     for cmd in extra_cmds:
-        subprocess.run(cmd, shell=True)
+        try:
+            subprocess.run(cmd, shell=True, check=False)
+        except Exception as e:
+            print("Extra download failed:", e)
 
     # ---------------------------------------------------------
-    # LAUNCH COMFYUI (ONLY ONCE)
+    # LAUNCH ComfyUI (single launch, avoid restarts)
     # ---------------------------------------------------------
-    print("Launching ComfyUI...")
+    print("Launching ComfyUI (single process)...")
     subprocess.Popen(
         [
             "comfy", "launch", "--",
@@ -262,31 +272,86 @@ def ui():
     )
 
     # ---------------------------------------------------------
-    # DELAYED INSIGHTFACE INSTALL (NO RESTART)
+    # DELAYED InsightFace install (post-boot) - NO RESTART
     # ---------------------------------------------------------
     def install_insightface_postboot():
-        time.sleep(10)
+        time.sleep(10)  # give ComfyUI time to initialize
         ins = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-InsightFace")
 
+        # Clone if missing
         if not os.path.exists(ins):
             try:
-                print("Installing InsightFace node...")
+                print("Cloning ComfyUI-InsightFace...")
                 subprocess.run(
                     f"git clone https://github.com/ltdrdata/ComfyUI-InsightFace {ins}",
-                    shell=True
+                    shell=True, check=False
                 )
-                req = os.path.join(ins, "requirements.txt")
-                if os.path.exists(req):
-                    subprocess.run(f"pip install -r {req}", shell=True)
-                print("InsightFace install complete.")
             except Exception as e:
-                print("InsightFace install failed:", e)
+                print("InsightFace git clone error:", e)
         else:
-            print("InsightFace already installed.")
+            print("InsightFace node already present.")
 
-        # Trigger node rescan
-        subprocess.run("comfy node rescan || true", shell=True)
+        # Install *minimal* safe dependencies (CPU ONNX runtime + headless OpenCV)
+        try:
+            print("Installing minimal InsightFace dependencies (onnxruntime CPU, opencv-headless, scikit-image, numpy)...")
+            subprocess.run(
+                "pip install --no-cache-dir onnxruntime opencv-python-headless scikit-image numpy==1.26.4",
+                shell=True, check=False
+            )
+        except Exception as e:
+            print("Dependency install failed:", e)
+
+        # Brute patch all .py files in the cloned InsightFace node:
+        # - comment out any 'import mxnet'
+        # - try to force ONNX InferenceSession to use CPUExecutionProvider where applicable
+        try:
+            if os.path.exists(ins):
+                for root, dirs, files in os.walk(ins):
+                    for file in files:
+                        if not file.endswith(".py"):
+                            continue
+                        full = os.path.join(root, file)
+                        try:
+                            # comment out mxnet imports
+                            subprocess.run(
+                                f"sed -i \"s/^\\s*import mxnet/# import mxnet (disabled)/g\" \"{full}\"",
+                                shell=True, check=False
+                            )
+                            subprocess.run(
+                                f"sed -i \"s/^\\s*from mxnet import /# from mxnet import (disabled)/g\" \"{full}\"",
+                                shell=True, check=False
+                            )
+
+                            # If onnxruntime used, prefer CPUExecutionProvider
+                            # Replace common InferenceSession instantiation patterns
+                            subprocess.run(
+                                f"sed -i \"s/InferenceSession(\\([^)]*\\))/InferenceSession(\\1, providers=['CPUExecutionProvider'])/g\" \"{full}\"",
+                                shell=True, check=False
+                            )
+
+                            # Replace providers=None -> providers=['CPUExecutionProvider']
+                            subprocess.run(
+                                f"sed -i \"s/providers\\s*=\\s*None/providers=['CPUExecutionProvider']/g\" \"{full}\"",
+                                shell=True, check=False
+                            )
+                        except Exception as e:
+                            print("InsightFace file patch error:", full, e)
+                print("InsightFace node patched to avoid MXNet and prefer CPU ONNX.")
+            else:
+                print("InsightFace folder not found for patching.")
+        except Exception as e:
+            print("InsightFace patching exception:", e)
+
+        # Trigger Comfy's node rescan (safe, non-blocking)
+        try:
+            print("Triggering Comfy node rescan...")
+            subprocess.run("comfy node rescan || true", shell=True, check=False)
+        except Exception as e:
+            print("Node rescan failed:", e)
+
+        print("InsightFace install/post-boot tasks completed.")
 
     threading.Thread(target=install_insightface_postboot, daemon=True).start()
 
-    print("Background tasks started. ComfyUI fully launched.")
+    print("Startup complete. Background tasks launched (InsightFace install + Manager patches).")
+
