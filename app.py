@@ -16,7 +16,7 @@ DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
 # Helpers
 def git_clone_cmd(node_repo: str, recursive: bool = False, install_reqs: bool = False):
     name = node_repo.split("/")[-1]
-    dest = os.path.join(DEFAULT_COMFY_DIR, "custom_nodes", name)
+    dest = os.path.join(DEFAULT_comfy_DIR, "custom_nodes", name)
     cmd = f"git clone https://github.com/{node_repo} {dest}"
     if recursive:
         cmd += " --recursive"
@@ -80,7 +80,7 @@ for repo, flags in [
 ]:
     image = image.run_commands([git_clone_cmd(repo, **flags)])
 
-# NOTE: InsightFace REMOVED from build (avoid auth error)
+# InsightFace NOT installed here (runtime only)
 
 # Runtime model downloads
 model_tasks = [
@@ -92,7 +92,7 @@ model_tasks = [
     ("vae/FLUX", "ae.safetensors", "ffxvs/vae-flux", None),
 ]
 
-# InsightFace ONNX packages
+# InsightFace Model packages
 model_tasks += [
     ("insightface", "det_10g.onnx", "ltdrdata/insightface_models", "antelopev2"),
     ("insightface", "2d106det.onnx", "ltdrdata/insightface_models", "antelopev2"),
@@ -178,7 +178,7 @@ def ui():
     if os.path.exists(req):
         subprocess.run(f"/usr/local/bin/python -m pip install -r {req}", shell=True)
 
-    # Manager config (security fix)
+    # Manager config (for UI only)
     cfg_dir = os.path.join(DATA_BASE, "user", "default", "ComfyUI-Manager")
     os.makedirs(cfg_dir, exist_ok=True)
     with open(os.path.join(cfg_dir, "config.ini"), "w") as f:
@@ -191,7 +191,21 @@ def ui():
             "allow_node_install = true\n"
         )
 
-    # Patch Manager (disable signature check)
+    # ================================
+    # 🔥 Patch Manager security (core fix)
+    # ================================
+    try:
+        manager_cfg_py = os.path.join(manager_dir, "config.py")
+        if os.path.exists(manager_cfg_py):
+            subprocess.run(
+                "sed -i \"s/security_level *= *['\\\"]*.*['\\\"]/security_level = 'weak'/\" config.py",
+                shell=True
+            )
+            print("Manager security level forced to 'weak'")
+    except Exception as e:
+        print("Security patch failed:", e)
+
+    # signature bypass
     try:
         manager_main = os.path.join(manager_dir, "manager.py")
         if os.path.exists(manager_main):
@@ -200,13 +214,13 @@ def ui():
                 shell=True
             )
     except Exception as e:
-        print("Manager patch failed:", e)
+        print("Manager signature patch failed:", e)
 
     # Make dirs
     for d in [CUSTOM_NODES_DIR, MODELS_DIR, TMP_DL, os.path.join(MODELS_DIR, "insightface")]:
         os.makedirs(d, exist_ok=True)
 
-    # Install InsightFace Node (runtime → NO AUTH ERROR)
+    # InsightFace Node Install (runtime safe)
     ins_face = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-InsightFace")
     if not os.path.exists(ins_face):
         try:
@@ -219,7 +233,7 @@ def ui():
             if os.path.exists(req):
                 subprocess.run(f"pip install -r {req}", shell=True)
         except Exception as e:
-            print("InsightFace install failed:", e)
+            print("InsightFace install error:", e)
 
     # Download models
     for sub, fn, repo, subf in model_tasks:
