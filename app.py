@@ -80,10 +80,7 @@ for repo, flags in [
 ]:
     image = image.run_commands([git_clone_cmd(repo, **flags)])
 
-# InsightFace node
-image = image.run_commands([
-    git_clone_cmd("ltdrdata/ComfyUI-InsightFace", install_reqs=True)
-])
+# NOTE: InsightFace REMOVED from build (avoid auth error)
 
 # Runtime model downloads
 model_tasks = [
@@ -95,7 +92,7 @@ model_tasks = [
     ("vae/FLUX", "ae.safetensors", "ffxvs/vae-flux", None),
 ]
 
-# InsightFace model set (Antelopev2)
+# InsightFace ONNX packages
 model_tasks += [
     ("insightface", "det_10g.onnx", "ltdrdata/insightface_models", "antelopev2"),
     ("insightface", "2d106det.onnx", "ltdrdata/insightface_models", "antelopev2"),
@@ -157,6 +154,7 @@ def ui():
     except Exception as e:
         print("Backend update error:", e)
 
+
     # Update Manager
     manager_dir = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-Manager")
     if os.path.exists(manager_dir):
@@ -207,6 +205,21 @@ def ui():
     # Make dirs
     for d in [CUSTOM_NODES_DIR, MODELS_DIR, TMP_DL, os.path.join(MODELS_DIR, "insightface")]:
         os.makedirs(d, exist_ok=True)
+
+    # Install InsightFace Node (runtime → NO AUTH ERROR)
+    ins_face = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-InsightFace")
+    if not os.path.exists(ins_face):
+        try:
+            print("Installing InsightFace...")
+            subprocess.run(
+                f"git clone https://github.com/ltdrdata/ComfyUI-InsightFace {ins_face}",
+                shell=True, check=True
+            )
+            req = os.path.join(ins_face, "requirements.txt")
+            if os.path.exists(req):
+                subprocess.run(f"pip install -r {req}", shell=True)
+        except Exception as e:
+            print("InsightFace install failed:", e)
 
     # Download models
     for sub, fn, repo, subf in model_tasks:
