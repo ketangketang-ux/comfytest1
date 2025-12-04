@@ -11,12 +11,12 @@ DATA_BASE = os.path.join(DATA_ROOT, "ComfyUI")
 CUSTOM_NODES_DIR = os.path.join(DATA_BASE, "custom_nodes")
 MODELS_DIR = os.path.join(DATA_BASE, "models")
 TMP_DL = "/tmp/download"
-DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"
+DEFAULT_COMFY_DIR = "/root/comfy/ComfyUI"   # ✔ FIXED NAME
 
 # Helpers
 def git_clone_cmd(node_repo: str, recursive: bool = False, install_reqs: bool = False):
     name = node_repo.split("/")[-1]
-    dest = os.path.join(DEFAULT_comfy_DIR, "custom_nodes", name)
+    dest = os.path.join(DEFAULT_COMFY_DIR, "custom_nodes", name)  # ✔ FIXED
     cmd = f"git clone https://github.com/{node_repo} {dest}"
     if recursive:
         cmd += " --recursive"
@@ -49,9 +49,7 @@ image = (
         "uv pip install --system --compile-bytecode huggingface_hub[hf_transfer]==0.28.1",
         "comfy --skip-prompt install --nvidia"
     ])
-    .env({
-        "HF_HUB_ENABLE_HF_TRANSFER": "1",
-    })
+    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
 # Built-in comfy nodes
@@ -80,7 +78,7 @@ for repo, flags in [
 ]:
     image = image.run_commands([git_clone_cmd(repo, **flags)])
 
-# InsightFace NOT installed here (runtime only)
+# InsightFace installed at runtime (not in build!)
 
 # Runtime model downloads
 model_tasks = [
@@ -92,7 +90,7 @@ model_tasks = [
     ("vae/FLUX", "ae.safetensors", "ffxvs/vae-flux", None),
 ]
 
-# InsightFace Model packages
+# InsightFace ONNX packages
 model_tasks += [
     ("insightface", "det_10g.onnx", "ltdrdata/insightface_models", "antelopev2"),
     ("insightface", "2d106det.onnx", "ltdrdata/insightface_models", "antelopev2"),
@@ -111,10 +109,7 @@ extra_cmds = [
 
 vol = modal.Volume.from_name("comfyui-app", create_if_missing=True)
 
-app = modal.App(
-    name="comfyui",
-    image=image
-)
+app = modal.App(name="comfyui", image=image)
 
 @app.function(
     max_containers=1,
@@ -144,9 +139,8 @@ def ui():
     os.chdir(DATA_BASE)
 
     try:
-        result = subprocess.run("git symbolic-ref HEAD", shell=True, capture_output=True, text=True)
-
-        if result.returncode != 0:
+        r = subprocess.run("git symbolic-ref HEAD", shell=True, capture_output=True, text=True)
+        if r.returncode != 0:
             subprocess.run("git checkout -B main origin/main", shell=True, check=True)
 
         subprocess.run("git config pull.ff only", shell=True, check=True)
@@ -178,7 +172,7 @@ def ui():
     if os.path.exists(req):
         subprocess.run(f"/usr/local/bin/python -m pip install -r {req}", shell=True)
 
-    # Manager config (for UI only)
+    # Manager UI config
     cfg_dir = os.path.join(DATA_BASE, "user", "default", "ComfyUI-Manager")
     os.makedirs(cfg_dir, exist_ok=True)
     with open(os.path.join(cfg_dir, "config.ini"), "w") as f:
@@ -191,9 +185,9 @@ def ui():
             "allow_node_install = true\n"
         )
 
-    # ================================
-    # 🔥 Patch Manager security (core fix)
-    # ================================
+    # ============================================================
+    # 🔥 CORE FIX — force Manager security to weak
+    # ============================================================
     try:
         manager_cfg_py = os.path.join(manager_dir, "config.py")
         if os.path.exists(manager_cfg_py):
@@ -201,11 +195,11 @@ def ui():
                 "sed -i \"s/security_level *= *['\\\"]*.*['\\\"]/security_level = 'weak'/\" config.py",
                 shell=True
             )
-            print("Manager security level forced to 'weak'")
+            print("Manager security_level forced to weak")
     except Exception as e:
-        print("Security patch failed:", e)
+        print("Manager security patch failed:", e)
 
-    # signature bypass
+    # Signature bypass
     try:
         manager_main = os.path.join(manager_dir, "manager.py")
         if os.path.exists(manager_main):
@@ -214,17 +208,17 @@ def ui():
                 shell=True
             )
     except Exception as e:
-        print("Manager signature patch failed:", e)
+        print("Signature bypass failed:", e)
 
     # Make dirs
     for d in [CUSTOM_NODES_DIR, MODELS_DIR, TMP_DL, os.path.join(MODELS_DIR, "insightface")]:
         os.makedirs(d, exist_ok=True)
 
-    # InsightFace Node Install (runtime safe)
+    # Install InsightFace node (runtime)
     ins_face = os.path.join(CUSTOM_NODES_DIR, "ComfyUI-InsightFace")
     if not os.path.exists(ins_face):
         try:
-            print("Installing InsightFace...")
+            print("Installing InsightFace node...")
             subprocess.run(
                 f"git clone https://github.com/ltdrdata/ComfyUI-InsightFace {ins_face}",
                 shell=True, check=True
@@ -233,7 +227,7 @@ def ui():
             if os.path.exists(req):
                 subprocess.run(f"pip install -r {req}", shell=True)
         except Exception as e:
-            print("InsightFace install error:", e)
+            print("InsightFace install failed:", e)
 
     # Download models
     for sub, fn, repo, subf in model_tasks:
@@ -244,7 +238,7 @@ def ui():
             except Exception as e:
                 print("Model download failed:", e)
 
-    # Extra downloads
+    # Extra models
     for cmd in extra_cmds:
         subprocess.run(cmd, shell=True)
 
